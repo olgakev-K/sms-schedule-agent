@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime
@@ -90,7 +91,10 @@ if uploaded_file and st.button("Сформировать SMS-график"):
             
             res_df = pd.DataFrame(schedule)
             st.success(f"График успешно сформирован! Извлечено задач: {len(res_df)}")
-                       excel_out = "SMS_Schedule_Result.xlsx"
+
+st.dataframe(res_df, use_container_width=True)
+            
+            excel_out = "SMS_Schedule_Result.xlsx"
             with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
                 res_df.to_excel(writer, index=False, sheet_name='SMS Schedule')
             
