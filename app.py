@@ -3,13 +3,13 @@ import pandas as pd
 import datetime
 import holidays
 import openpyxl
+from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="SMS Schedule Agent", layout="wide")
 
-st.title("🤖 ИИ-Агент: Генератор понятного Excel-графика проекта")
-st.write("Формирование наглядной диаграммы Ганта по неделям с удобным скачиванием Excel-файла")
+st.title("🤖 ИИ-Агент: Генератор настоящей Диаграммы Ганта в Excel")
+st.write("Автоматическое построение графической диаграммы Ганта на отдельном листе Excel")
 
 @st.cache_data
 def get_rf_holidays():
@@ -41,100 +41,84 @@ def extract_start_milestone(xls):
                         return dt.date()
     return None
 
-def create_weekly_gantt_excel(schedule_data):
+def create_true_gantt_chart(schedule_data):
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "График работ (Гант)"
-    ws.views.sheetView[0].showGridLines = True
-
-    # Определение диапазона недель
-    min_date = min(item['Start'] for item in schedule_data)
-    max_date = max(item['Finish'] for item in schedule_data)
-
-    # Список уникальных недель (год, номер недели)
-    weeks = []
-    curr = min_date
-    while curr <= max_date + datetime.timedelta(days=7):
-        iso_year, iso_week, _ = curr.isocalendar()
-        if (iso_year, iso_week) not in weeks:
-            weeks.append((iso_year, iso_week))
-        curr += datetime.timedelta(days=7)
-
-    # Цветовая гамма
-    navy_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    bar_fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
-    light_gray_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     
-    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-    font_bold = Font(name="Calibri", size=10, bold=True)
-    font_regular = Font(name="Calibri", size=10)
+    # --- ЛИСТ 1: ТАБЛИЦА С ДАННЫМИ ---
+    ws_data = wb.active
+    ws_data.title = "Реестр задач"
+    ws_data.views.sheetView[0].showGridLines = True
 
-    thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
-    )
+    headers = ["№", "Фаза проекта", "Описание работы (DESCRIPTION)", "Дата начала", "Дата финиша", "Смещение (дней)", "Длительность (дней)"]
+    ws_data.append(headers)
 
-    # 1. Заголовки таблицы (Левая часть)
-    base_headers = ["№", "Фаза проекта", "Описание работы (DESCRIPTION)", "Дата начала", "Дата финиша"]
-    for col_idx, h in enumerate(base_headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=h)
-        cell.fill = navy_fill
-        cell.font = font_header
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws_data.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # 2. Шкала недель (Правая часть)
-    for w_idx, (y, w) in enumerate(weeks, len(base_headers) + 1):
-        cell = ws.cell(row=1, column=w_idx, value=f"Неделя {w}\n({y})")
-        cell.fill = navy_fill
-        cell.font = font_header
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.column_dimensions[get_column_letter(w_idx)].width = 11
+    base_date = schedule_data[0]['Start']
 
-    ws.row_dimensions[1].height = 30
+    for item in schedule_data:
+        offset_days = (item['Start'] - base_date).days
+        duration_days = max(1, (item['Finish'] - item['Start']).days + 1)
+        
+        ws_data.append([
+            item['№'],
+            item['Фаза проекта'],
+            f"{item['№']}. {item['DESCRIPTION']}",
+            item['Start'].strftime("%d.%m.%Y"),
+            item['Finish'].strftime("%d.%m.%Y"),
+            offset_days,
+            duration_days
+        ])
 
-    # 3. Заполнение строк данных и ячеек Ганта
-    for r_idx, item in enumerate(schedule_data, 2):
-        ws.cell(row=r_idx, column=1, value=item['№']).alignment = Alignment(horizontal="center")
-        ws.cell(row=r_idx, column=2, value=item['Фаза проекта'])
-        ws.cell(row=r_idx, column=3, value=item['DESCRIPTION'])
-        ws.cell(row=r_idx, column=4, value=item['Start'].strftime("%d.%m.%Y")).alignment = Alignment(horizontal="center")
-        ws.cell(row=r_idx, column=5, value=item['Finish'].strftime("%d.%m.%Y")).alignment = Alignment(horizontal="center")
+    ws_data.column_dimensions['A'].width = 6
+    ws_data.column_dimensions['B'].width = 28
+    ws_data.column_dimensions['C'].width = 50
+    ws_data.column_dimensions['D'].width = 14
+    ws_data.column_dimensions['E'].width = 14
+    ws_data.column_dimensions['F'].width = 16
+    ws_data.column_dimensions['G'].width = 18
 
-        # Получаем неделю задачи
-        task_year, task_week, _ = item['Start'].isocalendar()
+    # --- ЛИСТ 2: НАСТОЯЩИЙ ГРАФИК (ДИАГРАММА ГАНТА) ---
+    ws_chart = wb.create_sheet(title="Диаграмма Ганта")
+    ws_chart.views.sheetView[0].showGridLines = True
 
-        # Оформление левой таблицы
-        for c in range(1, len(base_headers) + 1):
-            cell = ws.cell(row=r_idx, column=c)
-            cell.font = font_regular
-            cell.border = thin_border
+    chart = BarChart()
+    chart.type = "bar"
+    chart.dir = "bar"
+    chart.style = 13
+    chart.grouping = "stacked"
+    chart.overlap = 100
+    chart.title = f"График выполнения работ (Старт проекта: {base_date.strftime('%d.%m.%Y')})"
+    chart.height = max(12, len(schedule_data) * 0.7)
+    chart.width = 22
 
-        # Подсветка полосы Ганта по неделям
-        for w_idx, (y, w) in enumerate(weeks, len(base_headers) + 1):
-            cell = ws.cell(row=r_idx, column=w_idx)
-            cell.border = thin_border
-            if (y, w) == (task_year, task_week):
-                cell.fill = bar_fill # Выделяем активную неделю синим цветом
-            else:
-                if (r_idx % 2) == 0:
-                    cell.fill = light_gray_fill
+    # Ссылки на данные с Листа 1
+    data = Reference(ws_data, min_col=6, min_row=1, max_col=7, max_row=len(schedule_data) + 1)
+    cats = Reference(ws_data, min_col=3, min_row=2, max_row=len(schedule_data) + 1)
 
-        ws.row_dimensions[r_idx].height = 20
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
 
-    # Настройка ширины колонок таблицы
-    ws.column_dimensions['A'].width = 6
-    ws.column_dimensions['B'].width = 28
-    ws.column_dimensions['C'].width = 50
-    ws.column_dimensions['D'].width = 14
-    ws.column_dimensions['E'].width = 14
+    # Делаем первому ряду (Смещение) прозрачный фон для эффекта Ганта
+    if len(chart.series) > 0:
+        chart.series[0].graphicalProperties.solidFill = "FFFFFF"
+        chart.series[0].graphicalProperties.line.solidFill = "FFFFFF"
 
-    filename = "SMS_Project_Gantt_Schedule.xlsx"
+    # Размещаем диаграмму на весь лист
+    ws_chart.add_chart(chart, "B2")
+
+    filename = "SMS_Project_Gantt_Chart.xlsx"
     wb.save(filename)
     return filename
 
-# --- Интерфейс Streamlit ---
+# --- ИНТЕРФЕЙС STREAMLIT ---
 uploaded_file = st.file_uploader("Загрузите Excel-файл проекта (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
 target_phases = ["PMSPR TOGF-ENG-008-06 Phase2", "PMSPR TOGF-ENG-008-06 Phase 3", "PMSPR TOGF-ENG-008-06 Phase4;5"]
 
@@ -179,25 +163,19 @@ if uploaded_file:
                 })
                 current_date = get_next_business_day(current_date + datetime.timedelta(days=1), holiday_dates)
 
-            # Генерация Excel
-            excel_filename = create_weekly_gantt_excel(schedule_data)
+            # Генерация файла
+            excel_filename = create_true_gantt_chart(schedule_data)
             
             st.markdown("---")
-            st.subheader("📊 Готовый график сформирован")
-            st.write(f"Успешно обработано задач: **{len(schedule_data)}**")
-            
-            # Таблица предварительного просмотра
-            df_preview = pd.DataFrame(schedule_data)
-            df_preview['Start'] = df_preview['Start'].apply(lambda x: x.strftime('%d.%m.%Y'))
-            df_preview['Finish'] = df_preview['Finish'].apply(lambda x: x.strftime('%d.%m.%Y'))
-            st.dataframe(df_preview[['№', 'Фаза проекта', 'DESCRIPTION', 'Start', 'Finish']], use_container_width=True, height=300)
+            st.subheader("📊 Графический файл Excel сформирован")
+            st.write("Файл содержит 2 вкладки: **«Реестр задач»** с исходными данными и **«Диаграмма Ганта»** с полноценным графическим объектом Excel.")
 
-            # Прямая кнопка скачивания Excel
+            # Кнопка скачивания Excel
             with open(excel_filename, "rb") as file:
                 st.download_button(
-                    label="📥 СКАЧАТЬ ГРАФИК ГАНТА В EXCEL (.XLSX)",
+                    label="📥 СКАЧАТЬ НАСТОЯЩУЮ ДИАГРАММУ ГАНТА В EXCEL (.XLSX)",
                     data=file,
-                    file_name="SMS_Project_Gantt_Schedule.xlsx",
+                    file_name="SMS_Project_Gantt_Chart.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
