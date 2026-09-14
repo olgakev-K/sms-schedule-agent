@@ -7,14 +7,23 @@ import openpyxl
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-st.set_page_config(page_title="SMS Schedule Agent — OnePage Blue Gantt", layout="wide")
+# --- Настройка страницы Streamlit ---
+st.set_page_config(
+    page_title="SMS Schedule Agent — Weekly Blue Gantt", 
+    layout="wide", 
+    initial_sidebar_state="expanded"
+)
 
-st.title("📊 ИИ-Агент: Недельный план-график проекта (Синяя схема)")
+st.title("📊 ИИ-Агент: Автоматический SMS График проекта (Диаграмма Ганта по неделям)")
+st.caption("Автоматический расчет рабочих дат с учетом праздников РФ, недельная визуализация в синих тонах и выгрузка в Excel.")
 
+# --- Функция получения праздничных дней РФ ---
 @st.cache_data
 def get_rf_holidays():
     current_year = datetime.datetime.now().year
-    ru_holidays = holidays.RU(years=[current_year - 2, current_year - 1, current_year, current_year + 1, current_year + 2, current_year + 3])
+    ru_holidays = holidays.RU(
+        years=[current_year - 2, current_year - 1, current_year, current_year + 1, current_year + 2]
+    )
     return set(ru_holidays.keys())
 
 def is_business_day(date_val, holiday_dates):
@@ -28,6 +37,7 @@ def get_next_business_day(date_val, holiday_dates):
         cur += datetime.timedelta(days=1)
     return cur
 
+# --- Извлечение даты старта вехи ---
 def extract_start_milestone(xls):
     sheet_name = "START PROJECT TOGF-ENG-007-02"
     if sheet_name in xls.sheet_names:
@@ -41,27 +51,26 @@ def extract_start_milestone(xls):
                         return dt.date()
     return None
 
-def create_excel_one_page(schedule_data, project_start_date):
+# --- Генерация Excel с реестром и синей Диаграммой Ганта на одном листе ---
+def create_excel_with_blue_gantt(schedule_data, project_start_date):
     wb = openpyxl.Workbook()
-    
-    # Реестр и Диаграмма Ганта на ОДНОМ листе
     ws = wb.active
-    ws.title = "План и Гант"
+    ws.title = "SMS График и Гант"
     ws.views.sheetView[0].showGridLines = True
 
     headers = [
         "№", 
-        "Фаза", 
-        "Описание работы", 
-        "Старт", 
-        "Финиш", 
-        "Неделя", 
+        "Фаза проекта", 
+        "Описание работы (DESCRIPTION)", 
+        "Дата начала", 
+        "Дата финиша", 
+        "Неделя (ISO)", 
         "Смещение (недель)", 
         "Длительность (недель)"
     ]
     ws.append(headers)
 
-    # Синее оформление заголовка
+    # Синее оформление заголовка таблицы
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     thin_border = Border(
@@ -98,31 +107,30 @@ def create_excel_one_page(schedule_data, project_start_date):
             duration_weeks
         ])
 
-        # Чередование строк с легким синим оттенком
+        # Чередование строк
         row_fill = PatternFill(start_color="F2F7FA" if row_idx % 2 == 0 else "FFFFFF", fill_type="solid")
         for col_i in range(1, len(headers) + 1):
             c = ws.cell(row=row_idx, column=col_i)
             c.fill = row_fill
             c.border = thin_border
 
-    # Настройка ширины колонок
-    ws.column_dimensions['A'].width = 5
-    ws.column_dimensions['B'].width = 22
-    ws.column_dimensions['C'].width = 38
-    ws.column_dimensions['D'].width = 12
-    ws.column_dimensions['E'].width = 12
-    ws.column_dimensions['F'].width = 10
-    ws.column_dimensions['G'].width = 16
-    ws.column_dimensions['H'].width = 18
+    ws.column_dimensions['A'].width = 6
+    ws.column_dimensions['B'].width = 24
+    ws.column_dimensions['C'].width = 42
+    ws.column_dimensions['D'].width = 13
+    ws.column_dimensions['E'].width = 13
+    ws.column_dimensions['F'].width = 12
+    ws.column_dimensions['G'].width = 18
+    ws.column_dimensions['H'].width = 20
 
-    # Внедрение Диаграммы Ганта прямо рядом с реестром на ту же страницу (начиная с колонки J)
+    # Внедрение графика Ганта рядом с таблицей
     chart = BarChart()
     chart.type = "bar"
     chart.dir = "bar"
     chart.style = 13
     chart.grouping = "stacked"
     chart.overlap = 100
-    chart.title = "Диаграмма Ганта проекта (по неделям)"
+    chart.title = f"Недельный SMS График Ганта (Старт: {project_start_date.strftime('%d.%m.%Y')})"
     chart.x_axis.title = "Шкала времени (недели)"
     chart.height = max(12, len(schedule_data) * 0.75)
     chart.width = 18
@@ -133,24 +141,28 @@ def create_excel_one_page(schedule_data, project_start_date):
     chart.add_data(data, titles_from_data=True)
     chart.set_categories(cats)
 
-    # Настройка синей гаммы для полос Ганта в Excel
+    # Настройка синей гаммы
     if len(chart.series) > 1:
-        # Прозрачный сдвиг
+        # Сдвиг — прозрачный
         chart.series[0].graphicalProperties.solidFill = "FFFFFF"
         chart.series[0].graphicalProperties.line.solidFill = "FFFFFF"
-        # Насыщенная синяя полоса выполнения (Navy Blue)
+        # Длительность — темно-синий цвет
         chart.series[1].graphicalProperties.solidFill = "1F4E78"
         chart.series[1].graphicalProperties.line.solidFill = "1F4E78"
 
-    # Размещаем график на том же листе в ячейку J1
     ws.add_chart(chart, "J1")
 
-    filename = "SMS_Project_Weekly_Gantt_OnePage.xlsx"
+    filename = "SMS_Project_Weekly_Gantt_Blue.xlsx"
     wb.save(filename)
     return filename
 
-# --- ИНТЕРФЕЙС STREAMLIT ---
-uploaded_file = st.file_uploader("Загрузите Excel-файл проекта (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
+# --- ИНТЕРФЕЙС И ЛОГИКА ---
+uploaded_file = st.file_uploader(
+    "Загрузите исходный мастер-файл проекта (.xlsx)", 
+    type=["xlsx"],
+    help="Выберите файл PLANT_MASTER_SCHEDULE P25077.xlsx"
+)
+
 target_phases = ["PMSPR TOGF-ENG-008-06 Phase2", "PMSPR TOGF-ENG-008-06 Phase 3", "PMSPR TOGF-ENG-008-06 Phase4;5"]
 
 if uploaded_file:
@@ -158,7 +170,7 @@ if uploaded_file:
     start_date = extract_start_milestone(xls)
     
     if start_date:
-        st.success(f"📅 Дата старта вехи: **{start_date.strftime('%d.%m.%Y')}**")
+        st.success(f"📅 Дата старта вехи проекта: **{start_date.strftime('%d.%m.%Y')}**")
         
         tasks = []
         for sheet in target_phases:
@@ -205,81 +217,72 @@ if uploaded_file:
 
             st.markdown("---")
             
-            # --- РАЗМЕЩЕНИЕ НА ОДНОЙ СТРАНИЦЕ (2 КОЛОНКИ ПАРАЛЛЕЛЬНО) ---
-            col_left, col_right = st.columns([1, 1], gap="medium")
+            # --- ВЕБ-ДИАГРАММА ГАНТА (ПО НЕДЕЛЯМ, СИНЯЯ СХЕМА) ---
+            st.markdown("### 📈 Автоматический SMS График (Недельная Диаграмма Ганта)")
 
-            # КОЛОНКА 1: Реестр задач
-            with col_left:
-                st.markdown("### 📋 Реестр задач")
+            # Синяя палитра оттенков
+            blue_shades = ["#1F4E78", "#2F5597", "#41719C", "#5B9BD5", "#8EA9DB"]
+
+            fig = px.timeline(
+                df_sched,
+                x_start="Start",
+                x_end="Finish",
+                y="DESCRIPTION",
+                color="Фаза проекта",
+                hover_data=["№", "Start", "Finish", "Week_Label"],
+                color_discrete_sequence=blue_shades,
+                title="Недельный график выполнения работ проекта"
+            )
+            
+            fig.update_yaxes(autorange="reversed", title="Задачи / Описание работ")
+            
+            # Разметка оси X по НЕДЕЛЯМ
+            fig.update_xaxes(
+                title="Шкала времени (недели)",
+                dtick="M1", # Недельный интервал
+                tickformat="%d.%m\n(W%V)", # Понедельник и номер недели W38, W39...
+                showgrid=True,
+                gridcolor="#E2E8F0",
+                rangeslider=dict(visible=True) # Слайдер масштабирования
+            )
+            
+            fig.update_layout(
+                height=max(550, len(schedule_data) * 26),
+                plot_bgcolor="#FFFFFF",
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.01,
+                    xanchor="right",
+                    x=1,
+                    title_text="Фазы проекта:"
+                ),
+                font=dict(size=12)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # --- РЕЕСТР ЗАДАЧ В ТАБЛИЦЕ ---
+            with st.expander("📋 Посмотреть детализированный реестр задач", expanded=False):
                 df_display = df_sched[['№', 'Фаза проекта', 'DESCRIPTION', 'Start', 'Finish', 'Week_Label']].copy()
                 df_display['Start'] = df_display['Start'].apply(lambda x: x.strftime('%d.%m.%Y'))
                 df_display['Finish'] = df_display['Finish'].apply(lambda x: x.strftime('%d.%m.%Y'))
                 df_display.columns = ['№', 'Фаза', 'Описание работы', 'Старт', 'Финиш', 'Неделя']
-                
-                st.dataframe(
-                    df_display,
-                    use_container_width=True,
-                    height=max(450, len(schedule_data) * 28),
-                    hide_index=True
-                )
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # КОЛОНКА 2: График Ганта в синей гамме
-            with col_right:
-                st.markdown("### 📈 График Ганта (Недели)")
-                
-                # Синяя цветовая палитра для фаз
-                blue_palette = ["#1F4E78", "#2F5597", "#41719C", "#5B9BD5", "#8EA9DB"]
-
-                fig = px.timeline(
-                    df_sched,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="DESCRIPTION",
-                    color="Фаза проекта",
-                    hover_data=["№", "Start", "Finish", "Week_Label"],
-                    color_discrete_sequence=blue_palette
-                )
-                
-                fig.update_yaxes(autorange="reversed", title="")
-                
-                # Недельный шаг по оси X (M1 = 1 неделя)
-                fig.update_xaxes(
-                    title="Шкала времени (недели)",
-                    dtick="M1",  
-                    tickformat="%d.%m\n(W%V)",
-                    showgrid=True,
-                    gridcolor="#E5E8EB"
-                )
-                
-                fig.update_layout(
-                    height=max(450, len(schedule_data) * 28),
-                    margin=dict(l=10, r=10, t=10, b=10),
-                    plot_bgcolor="#FFFFFF",
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1,
-                        title_text=""
-                    ),
-                    font=dict(size=11)
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
-
-            # --- ВЫГРУЗКА В EXCEL НА ОДИН ЛИСТ ---
-            excel_file = create_excel_one_page(schedule_data, start_date)
+            # --- КНОПКА СКАЧИВАНИЯ СФОРМИРОВАННОГО ФАЙЛА ---
+            excel_file = create_excel_with_blue_gantt(schedule_data, start_date)
             
             st.markdown("---")
             with open(excel_file, "rb") as f:
                 st.download_button(
-                    label="📥 СКАЧАТЬ ОДНОСТРАНИЧНЫЙ EXCEL (.XLSX) С РЕЕСТРОМ И СИНЕМ ГАНТОМ",
+                    label="📥 СКАЧАТЬ СФОРМИРОВАННЫЙ SMS ГРАФИК (EXCEL С СИНЕМ ГАНТОМ .XLSX)",
                     data=f,
-                    file_name="SMS_Weekly_Gantt_OnePage_Blue.xlsx",
+                    file_name="SMS_Weekly_Gantt_Blue_Schedule.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
         else:
             st.error("Задачи не найдены в исходных листах.")
-
+    else:
+        st.error("Не удалось определить дату старта из вехи START PROJECT TOGF-ENG-007-02.")
