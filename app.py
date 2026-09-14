@@ -1,17 +1,15 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import requests
 import holidays
-import plotly.express as px
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="SMS Schedule Agent", layout="wide")
 
-st.title("🤖 ИИ-Агент: Генератор интерактивного графика проекта")
-st.write("Наглядная визуализация большого объема задач с возможностью масштабирования и выгрузки")
+st.title("🤖 ИИ-Агент: Генератор понятного Excel-графика проекта")
+st.write("Формирование наглядной диаграммы Ганта по неделям с удобным скачиванием Excel-файла")
 
 @st.cache_data
 def get_rf_holidays():
@@ -43,24 +41,33 @@ def extract_start_milestone(xls):
                         return dt.date()
     return None
 
-def generate_tree_excel(df_schedule):
+def create_weekly_gantt_excel(schedule_data):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Сводный график MS Project style"
+    ws.title = "График работ (Гант)"
     ws.views.sheetView[0].showGridLines = True
 
-    # Header
-    headers = ["№", "Фаза проекта", "Описание работы (DESCRIPTION)", "Дата начала", "Дата завершения", "Рабочих дней", "Неделя"]
-    ws.append(headers)
+    # Определение диапазона недель
+    min_date = min(item['Start'] for item in schedule_data)
+    max_date = max(item['Finish'] for item in schedule_data)
+
+    # Список уникальных недель (год, номер недели)
+    weeks = []
+    curr = min_date
+    while curr <= max_date + datetime.timedelta(days=7):
+        iso_year, iso_week, _ = curr.isocalendar()
+        if (iso_year, iso_week) not in weeks:
+            weeks.append((iso_year, iso_week))
+        curr += datetime.timedelta(days=7)
+
+    # Цветовая гамма
+    navy_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    bar_fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    light_gray_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     
-    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    
-    for col_num in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_bold = Font(name="Calibri", size=10, bold=True)
+    font_regular = Font(name="Calibri", size=10)
 
     thin_border = Border(
         left=Side(style='thin', color='D9D9D9'),
@@ -69,31 +76,65 @@ def generate_tree_excel(df_schedule):
         bottom=Side(style='thin', color='D9D9D9')
     )
 
-    for r_idx, row in df_schedule.iterrows():
-        curr_row = r_idx + 2
-        ws.cell(row=curr_row, column=1, value=row['№']).alignment = Alignment(horizontal="center")
-        ws.cell(row=curr_row, column=2, value=row['Фаза проекта'])
-        ws.cell(row=curr_row, column=3, value=row['DESCRIPTION'])
-        ws.cell(row=curr_row, column=4, value=row['Start'].strftime("%d.%m.%Y")).alignment = Alignment(horizontal="center")
-        ws.cell(row=curr_row, column=5, value=row['Finish'].strftime("%d.%m.%Y")).alignment = Alignment(horizontal="center")
-        ws.cell(row=curr_row, column=6, value=1).alignment = Alignment(horizontal="center")
-        ws.cell(row=curr_row, column=7, value=f"W{row['Start'].isocalendar()[1]}").alignment = Alignment(horizontal="center")
+    # 1. Заголовки таблицы (Левая часть)
+    base_headers = ["№", "Фаза проекта", "Описание работы (DESCRIPTION)", "Дата начала", "Дата финиша"]
+    for col_idx, h in enumerate(base_headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = navy_fill
+        cell.font = font_header
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        for c_idx in range(1, len(headers) + 1):
-            ws.cell(row=curr_row, column=c_idx).border = thin_border
+    # 2. Шкала недель (Правая часть)
+    for w_idx, (y, w) in enumerate(weeks, len(base_headers) + 1):
+        cell = ws.cell(row=1, column=w_idx, value=f"Неделя {w}\n({y})")
+        cell.fill = navy_fill
+        cell.font = font_header
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(w_idx)].width = 11
 
+    ws.row_dimensions[1].height = 30
+
+    # 3. Заполнение строк данных и ячеек Ганта
+    for r_idx, item in enumerate(schedule_data, 2):
+        ws.cell(row=r_idx, column=1, value=item['№']).alignment = Alignment(horizontal="center")
+        ws.cell(row=r_idx, column=2, value=item['Фаза проекта'])
+        ws.cell(row=r_idx, column=3, value=item['DESCRIPTION'])
+        ws.cell(row=r_idx, column=4, value=item['Start'].strftime("%d.%m.%Y")).alignment = Alignment(horizontal="center")
+        ws.cell(row=r_idx, column=5, value=item['Finish'].strftime("%d.%m.%Y")).alignment = Alignment(horizontal="center")
+
+        # Получаем неделю задачи
+        task_year, task_week, _ = item['Start'].isocalendar()
+
+        # Оформление левой таблицы
+        for c in range(1, len(base_headers) + 1):
+            cell = ws.cell(row=r_idx, column=c)
+            cell.font = font_regular
+            cell.border = thin_border
+
+        # Подсветка полосы Ганта по неделям
+        for w_idx, (y, w) in enumerate(weeks, len(base_headers) + 1):
+            cell = ws.cell(row=r_idx, column=w_idx)
+            cell.border = thin_border
+            if (y, w) == (task_year, task_week):
+                cell.fill = bar_fill # Выделяем активную неделю синим цветом
+            else:
+                if (r_idx % 2) == 0:
+                    cell.fill = light_gray_fill
+
+        ws.row_dimensions[r_idx].height = 20
+
+    # Настройка ширины колонок таблицы
     ws.column_dimensions['A'].width = 6
-    ws.column_dimensions['B'].width = 30
-    ws.column_dimensions['C'].width = 55
+    ws.column_dimensions['B'].width = 28
+    ws.column_dimensions['C'].width = 50
     ws.column_dimensions['D'].width = 14
     ws.column_dimensions['E'].width = 14
-    ws.column_dimensions['F'].width = 14
-    ws.column_dimensions['G'].width = 10
 
-    filename = "MS_Project_Style_Schedule.xlsx"
+    filename = "SMS_Project_Gantt_Schedule.xlsx"
     wb.save(filename)
     return filename
 
+# --- Интерфейс Streamlit ---
 uploaded_file = st.file_uploader("Загрузите Excel-файл проекта (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
 target_phases = ["PMSPR TOGF-ENG-008-06 Phase2", "PMSPR TOGF-ENG-008-06 Phase 3", "PMSPR TOGF-ENG-008-06 Phase4;5"]
 
@@ -102,7 +143,7 @@ if uploaded_file:
     start_date = extract_start_milestone(xls)
     
     if start_date:
-        st.success(f"📅 Начальная дата вехи: **{start_date.strftime('%d.%m.%Y')}**")
+        st.success(f"📅 Начальная дата вехи найдена: **{start_date.strftime('%d.%m.%Y')}**")
         
         tasks = []
         for sheet in target_phases:
@@ -125,74 +166,40 @@ if uploaded_file:
         if tasks:
             holiday_dates = get_rf_holidays()
             current_date = start_date
-            schedule_list = []
+            schedule_data = []
             
             for idx, row in enumerate(tasks):
                 current_date = get_next_business_day(current_date, holiday_dates)
-                # Для корректного отображения полос на Plotly график добавим продолжительность в 1 рабочий день
-                finish_date = current_date + datetime.timedelta(days=1)
-                schedule_list.append({
+                schedule_data.append({
                     '№': idx + 1,
                     'Фаза проекта': row['Phase'],
-                    'DESCRIPTION': f"{idx + 1}. {row['DESCRIPTION']}",
+                    'DESCRIPTION': row['DESCRIPTION'],
                     'Start': current_date,
-                    'Finish': finish_date
+                    'Finish': current_date
                 })
-                current_date = get_next_business_day(finish_date, holiday_dates)
+                current_date = get_next_business_day(current_date + datetime.timedelta(days=1), holiday_dates)
 
-            df_schedule = pd.DataFrame(schedule_list)
+            # Генерация Excel
+            excel_filename = create_weekly_gantt_excel(schedule_data)
+            
+            st.markdown("---")
+            st.subheader("📊 Готовый график сформирован")
+            st.write(f"Успешно обработано задач: **{len(schedule_data)}**")
+            
+            # Таблица предварительного просмотра
+            df_preview = pd.DataFrame(schedule_data)
+            df_preview['Start'] = df_preview['Start'].apply(lambda x: x.strftime('%d.%m.%Y'))
+            df_preview['Finish'] = df_preview['Finish'].apply(lambda x: x.strftime('%d.%m.%Y'))
+            st.dataframe(df_preview[['№', 'Фаза проекта', 'DESCRIPTION', 'Start', 'Finish']], use_container_width=True, height=300)
 
-            # Переключатель представлений
-            view_option = st.radio(
-                "Выберите формат отображения графика:",
-                ["📊 1. Интерактивная диаграмма Ганта (Plotly со слайдером времени)", 
-                 "📋 2. Сводная структура (MS Project style + Excel)", 
-                 "🗓️ 3. Месячный обзор (Heatmap Overview)"]
-            )
-
-            if "1. Интерактивная" in view_option:
-                st.write("### 🔍 Интерактивный график (подходит для сотен задач)")
-                st.info("💡 **Как пользователем управлять:** Нажимайте и удерживайте левую кнопку мыши для приближения конкретного отрезка. Внизу расположена полоса масштабирования (Range Slider).")
-                
-                # Создаем Plotly Timeline
-                fig = px.timeline(
-                    df_schedule, 
-                    x_start="Start", 
-                    x_end="Finish", 
-                    y="DESCRIPTION", 
-                    color="Фаза проекта",
-                    hover_data=["№", "Start", "Finish"],
-                    title="График выполнения работ по проекту"
+            # Прямая кнопка скачивания Excel
+            with open(excel_filename, "rb") as file:
+                st.download_button(
+                    label="📥 СКАЧАТЬ ГРАФИК ГАНТА В EXCEL (.XLSX)",
+                    data=file,
+                    file_name="SMS_Project_Gantt_Schedule.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
                 )
-                
-                # Порядок задач сверху вниз
-                fig.update_yaxes(autorange="reversed")
-                
-                # Настройка интерактивных элементов
-                fig.update_layout(
-                    height=max(500, len(df_schedule) * 22),
-                    xaxis=dict(
-                        rangeslider=dict(visible=True),
-                        type="date"
-                    ),
-                    legend_title_text="Фазы проекта",
-                    font=dict(size=11)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-
-            elif "2. Сводная структура" in view_option:
-                st.write("### 📋 Табличный вид с разбивкой по неделям")
-                st.dataframe(df_schedule[['№', 'Фаза проекта', 'DESCRIPTION', 'Start', 'Finish']], use_container_width=True)
-                
-                excel_file = generate_tree_excel(df_schedule)
-                with open(excel_file, "rb") as f:
-                    st.download_button("📥 Скачать аккуратный Excel-справочник", f, file_name="Project_Schedule.xlsx")
-
-            elif "3. Месячный обзор" in view_option:
-                st.write("### 🗓️ Распределение задач по месяцам")
-                df_schedule['Месяц'] = df_schedule['Start'].apply(lambda x: x.strftime('%Y-%m (%B)'))
-                monthly_summary = df_schedule.groupby(['Фаза проекта', 'Месяц']).size().unstack(fill_value=0)
-                st.bar_chart(monthly_summary)
         else:
-            st.error("Задачи не найдены в файле.")
+            st.error("Задачи не найдены в листах фаз.")
