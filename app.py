@@ -106,7 +106,8 @@ def generate_excel_variant1(schedule_data):
     ws.column_dimensions['F'].width = 18
 
     chart = BarChart()
-    chart.type = "barHoriz"
+    chart.type = "bar"
+    chart.dir = "bar"
     chart.style = 10
     chart.grouping = "stacked"
     chart.overlap = 100
@@ -166,7 +167,8 @@ def generate_excel_variant2(phase_summary, schedule_data):
         
     # График фаз
     chart = BarChart()
-    chart.type = "barHoriz"
+    chart.type = "bar"
+    chart.dir = "bar"
     chart.title = "Вариант 2: Сводный график по Фазам Проекта"
     chart.height = 8
     chart.width = 16
