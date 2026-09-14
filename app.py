@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import requests
-from bs4 import BeautifulSoup
 import holidays
 import plotly.express as px
 import openpyxl
@@ -14,14 +12,11 @@ st.set_page_config(page_title="ИИ-Агент: SMS График", layout="wide"
 
 st.title("🤖 ИИ-Агент: Генератор SMS-графика запуска в серийное производство")
 st.markdown("""
-**Задача агента:** Создать из файла-шаблона "PLANT_MASTER_SCHEDULE P25077" актуальный SMS-график проекта, 
-учитывающий только рабочие дни и государственные праздники РФ.
-
-**Выполняемые условия:**
-1. Веха старта берется из вкладки `START PROJECT TOGF-ENG-007-02`.
-2. Описание действий берется из столбца `DESCRIPTION` вкладок `Phase2`, `Phase 3`, `Phase4;5` в строгой последовательности.
-3. Игнорируются все автоматические и плановые даты из исходного файла (`PLANNED START DATE`, `PLANNED END DATE` и т.д.).
-4. Используется производственный календарь РФ (выходные и праздники).
+**Правила работы агента (строго по ТЗ):**
+1. ✅ **Вехи проекта (Дата начала и окончания)** извлекаются строго из вкладки `START PROJECT TOGF-ENG-007-02`.
+2. ✅ **Описание действий** берется из столбца `DESCRIPTION` вкладок `Phase2`, `Phase 3`, `Phase4;5` в строгой последовательности.
+3. ❌ **Игнорируются** все колонки: `PLANNED START DATE`, `PLANNED START WEEK (automatic)`, `PLANNED END DATE (automatic)`, `PLANNED END WEEK (automatic)`, `ACTUAL END DATE STATUS (automatic)`.
+4. 📅 Календарный план строится последовательно от вехи старта с учетом выходных и государственных праздников РФ.
 """)
 
 # Получение праздников РФ
@@ -47,19 +42,40 @@ def get_next_business_day(date_val, holiday_dates):
         cur += datetime.timedelta(days=1)
     return cur
 
-# 1. Извлечение даты вехи старта
-def extract_start_milestone(xls):
+# 1. Строгое извлечение вех начала и окончания проекта из конкретной вкладки
+def extract_project_milestones(xls):
     sheet_name = "START PROJECT TOGF-ENG-007-02"
+    start_date = None
+    end_date = None
+    
     if sheet_name in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
         for r in range(df.shape[0]):
+            # Собираем все значения строки в одну строку для контекстного поиска ключевых слов
+            row_text = " ".join([str(x).upper() for x in df.iloc[r] if pd.notna(x)])
+            
+            # Ищем даты в этой строке
+            dates_in_row = []
             for c in range(df.shape[1]):
                 cell_val = df.iloc[r, c]
-                if pd.notna(cell_val) and str(cell_val).strip().upper() not in ['N/A', 'NONE', 'CLOSED', 'DATE']:
-                    dt = pd.to_datetime(cell_val, errors='coerce')
-                    if pd.notna(dt) and 2020 < dt.year < 2035: # Фильтр адекватных годов
-                        return dt.date()
-    return None
+                dt = pd.to_datetime(cell_val, errors='coerce')
+                if pd.notna(dt) and 2020 < dt.year < 2035: # Фильтр адекватных годов
+                    dates_in_row.append((c, dt.date()))
+            
+            if dates_in_row:
+                first_date_in_row = dates_in_row[0][1]
+                
+                # Строгий поиск по ключевым словам для Вехи Начала
+                if any(kw in row_text for kw in ['START', 'НАЧАЛО', 'BEGIN', 'СТАРТ', 'KICK-OFF', 'ПЛАН НАЧАЛА']):
+                    start_date = first_date_in_row
+                # Строгий поиск по ключевым словам для Вехи Окончания
+                elif any(kw in row_text for kw in ['END', 'ОКОНЧАНИЕ', 'FINISH', 'ЗАВЕРШЕНИЕ', 'ГОТОВНОСТЬ', 'ПЛАН ОКОНЧАНИЯ']):
+                    end_date = first_date_in_row
+                # Если ключевых слов нет, но это первая найденная дата в листе - считаем её стартовой (резервный вариант)
+                elif start_date is None:
+                    start_date = first_date_in_row
+                    
+    return start_date, end_date
 
 # Генерация Excel-файла с компактной НЕДЕЛЬНОЙ Диаграммой Ганта
 def generate_excel_with_gantt(schedule_data, start_date, total_days=60):
@@ -74,8 +90,8 @@ def generate_excel_with_gantt(schedule_data, start_date, total_days=60):
     
     # Шрифты: 10 для основных данных, 9 для столбцов диаграммы (по требованию)
     header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-    gantt_font = Font(name="Calibri", size=9, bold=False, color="000000") # Шрифт 9 для диаграммы
-    gantt_header_font = Font(name="Calibri", size=9, bold=True, color="FFFFFF")
+    gantt_font = Font(name="Calibri", size=9, bold=False, color="000000") # Шрифт 9 для ячеек диаграммы
+    gantt_header_font = Font(name="Calibri", size=9, bold=True, color="FFFFFF") # Шрифт 9 для заголовков диаграммы
     regular_font = Font(name="Calibri", size=10)
     
     thin_border = Border(
@@ -114,7 +130,7 @@ def generate_excel_with_gantt(schedule_data, start_date, total_days=60):
         
     timeline_start_col = len(headers) + 1
     
-    # Создание заголовков недель (применяем шрифт 9 и ширину 4)
+    # Создание заголовков недель (применяем шрифт 9 и ширину 4 строго по ТЗ)
     for i, week in enumerate(weeks_list):
         c_idx = timeline_start_col + i
         cell = ws.cell(row=1, column=c_idx, value=week['label'])
@@ -150,7 +166,7 @@ def generate_excel_with_gantt(schedule_data, start_date, total_days=60):
     ws.column_dimensions['D'].width = 14
     ws.column_dimensions['E'].width = 14
     
-    # Закрепление верхней строки и первого столбца для удобства просмотра
+    # Закрепление верхней строки и первого столбца для удобства просмотра широкой диаграммы
     ws.freeze_panes = "F2"
     
     file_name = "SMS_Gantt_Schedule_AI_Agent.xlsx"
@@ -160,7 +176,7 @@ def generate_excel_with_gantt(schedule_data, start_date, total_days=60):
 # Загрузка файла
 uploaded_file = st.file_uploader("Загрузите файл шаблона: PLANT_MASTER_SCHEDULE P25077.xlsx", type=["xlsx"])
 
-# Строгая последовательность вкладок согласно условию 2
+# Строгая последовательность вкладок согласно условию
 target_phases = [
     "PMSPR TOGF-ENG-008-06 Phase2",
     "PMSPR TOGF-ENG-008-06 Phase 3",
@@ -170,16 +186,20 @@ target_phases = [
 if uploaded_file:
     try:
         xls = pd.ExcelFile(uploaded_file)
-        start_date = extract_start_milestone(xls)
+        start_date, end_date = extract_project_milestones(xls)
         
         if start_date:
-            st.success(f"✅ Веха проекта успешно извлечена: **{start_date.strftime('%d.%m.%Y')}** (из вкладки START PROJECT TOGF-ENG-007-02)")
+            milestone_msg = f"✅ Веха НАЧАЛА проекта строго извлечена из вкладки 'START PROJECT...': **{start_date.strftime('%d.%m.%Y')}**"
+            if end_date:
+                milestone_msg += f" | Веха ОКОНЧАНИЯ: **{end_date.strftime('%d.%m.%Y')}**"
+            st.success(milestone_msg)
+            st.info("⚠️ Все колонки с автоматическими и плановыми датами из вкладок фаз будут проигнорированы. График строится последовательно от вехи старта.")
             
             if st.button("🚀 Сформировать SMS-график с учетом праздников РФ", type="primary"):
                 with st.spinner("ИИ-агент анализирует файл, игнорирует автоматические даты и строит календарный план..."):
                     tasks = []
                     
-                    # Условие 2: Строгая последовательность вкладок
+                    # Условие: Строгая последовательность вкладок и извлечение только DESCRIPTION
                     for sheet in target_phases:
                         if sheet in xls.sheet_names:
                             df = pd.read_excel(xls, sheet_name=sheet, header=None)
@@ -198,8 +218,8 @@ if uploaded_file:
                                 # Извлекаем только описания, игнорируя заголовки и пустые строки
                                 for val in df.iloc[10:, desc_col].dropna():
                                     val_str = str(val).strip()
-                                    # Условие 3: Игнорируем строки, которые могут быть случайными датами или заголовками
-                                    if val_str and val_str.upper() not in ['DESCRIPTION', 'N/A', 'NONE']:
+                                    # Игнорируем строки, которые могут быть заголовками или мусором
+                                    if val_str and val_str.upper() not in ['DESCRIPTION', 'N/A', 'NONE', 'TOTAL', 'ИТОГО']:
                                         tasks.append({'Phase': sheet, 'DESCRIPTION': val_str})
 
                     if tasks:
@@ -215,7 +235,7 @@ if uploaded_file:
                             current_date = get_next_business_day(current_date, holiday_dates)
                             
                             t_start = current_date
-                            t_end = t_start # Длительность задачи по умолчанию 1 рабочий день (можно масштабировать при необходимости)
+                            t_end = t_start # Длительность задачи по умолчанию 1 рабочий день (как базовая веха выполнения)
                             
                             schedule_data.append({
                                 '№': idx + 1,
@@ -279,9 +299,10 @@ if uploaded_file:
                     else:
                         st.error("❌ Не удалось извлечь задачи из столбца DESCRIPTION в указанных вкладках.")
         else:
-            st.error("❌ Не удалось найти дату старта на вкладке 'START PROJECT TOGF-ENG-007-02'. Проверьте файл.")
+            st.error("❌ Не удалось найти дату вехи старта на вкладке 'START PROJECT TOGF-ENG-007-02'. Проверьте наличие даты в этом файле.")
             
     except Exception as e:
         st.error(f"⚠️ Ошибка при обработке файла: {e}")
 else:
     st.info("ℹ️ Ожидание загрузки файла шаблона PLANT_MASTER_SCHEDULE P25077.xlsx для начала работы ИИ-агента.")
+
