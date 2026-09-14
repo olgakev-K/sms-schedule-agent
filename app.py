@@ -7,17 +7,15 @@ import openpyxl
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-# --- Настройка страницы Streamlit ---
+# --- Настройка страницы ---
 st.set_page_config(
     page_title="SMS Schedule Agent — Weekly Blue Gantt", 
-    layout="wide", 
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-st.title("📊 ИИ-Агент: Автоматический SMS График проекта (Диаграмма Ганта по неделям)")
-st.caption("Автоматический расчет рабочих дат с учетом праздников РФ, недельная визуализация в синих тонах и выгрузка в Excel.")
+st.title("📊 ИИ-Агент: Автоматический SMS График проекта")
+st.subheader("Диаграмма Ганта: недельная шкала | Синяя гамма | Выгрузка в Excel")
 
-# --- Функция получения праздничных дней РФ ---
 @st.cache_data
 def get_rf_holidays():
     current_year = datetime.datetime.now().year
@@ -37,7 +35,6 @@ def get_next_business_day(date_val, holiday_dates):
         cur += datetime.timedelta(days=1)
     return cur
 
-# --- Извлечение даты старта вехи ---
 def extract_start_milestone(xls):
     sheet_name = "START PROJECT TOGF-ENG-007-02"
     if sheet_name in xls.sheet_names:
@@ -51,7 +48,6 @@ def extract_start_milestone(xls):
                         return dt.date()
     return None
 
-# --- Генерация Excel с реестром и синей Диаграммой Ганта на одном листе ---
 def create_excel_with_blue_gantt(schedule_data, project_start_date):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -70,7 +66,7 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     ]
     ws.append(headers)
 
-    # Синее оформление заголовка таблицы
+    # Синее оформление заголовков
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     thin_border = Border(
@@ -107,7 +103,6 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
             duration_weeks
         ])
 
-        # Чередование строк
         row_fill = PatternFill(start_color="F2F7FA" if row_idx % 2 == 0 else "FFFFFF", fill_type="solid")
         for col_i in range(1, len(headers) + 1):
             c = ws.cell(row=row_idx, column=col_i)
@@ -123,7 +118,7 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     ws.column_dimensions['G'].width = 18
     ws.column_dimensions['H'].width = 20
 
-    # Внедрение графика Ганта рядом с таблицей
+    # Внедренная синяя недельная Диаграмма Ганта
     chart = BarChart()
     chart.type = "bar"
     chart.dir = "bar"
@@ -141,12 +136,10 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     chart.add_data(data, titles_from_data=True)
     chart.set_categories(cats)
 
-    # Настройка синей гаммы
     if len(chart.series) > 1:
-        # Сдвиг — прозрачный
         chart.series[0].graphicalProperties.solidFill = "FFFFFF"
         chart.series[0].graphicalProperties.line.solidFill = "FFFFFF"
-        # Длительность — темно-синий цвет
+        # Темно-синяя заливка
         chart.series[1].graphicalProperties.solidFill = "1F4E78"
         chart.series[1].graphicalProperties.line.solidFill = "1F4E78"
 
@@ -156,11 +149,10 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     wb.save(filename)
     return filename
 
-# --- ИНТЕРФЕЙС И ЛОГИКА ---
+# --- Интерфейс ---
 uploaded_file = st.file_uploader(
-    "Загрузите исходный мастер-файл проекта (.xlsx)", 
-    type=["xlsx"],
-    help="Выберите файл PLANT_MASTER_SCHEDULE P25077.xlsx"
+    "Загрузите мастер-файл проекта (PLANT_MASTER_SCHEDULE P25077.xlsx)", 
+    type=["xlsx"]
 )
 
 target_phases = ["PMSPR TOGF-ENG-008-06 Phase2", "PMSPR TOGF-ENG-008-06 Phase 3", "PMSPR TOGF-ENG-008-06 Phase4;5"]
@@ -216,11 +208,9 @@ if uploaded_file:
             df_sched = pd.DataFrame(schedule_data)
 
             st.markdown("---")
-            
-            # --- ВЕБ-ДИАГРАММА ГАНТА (ПО НЕДЕЛЯМ, СИНЯЯ СХЕМА) ---
             st.markdown("### 📈 Автоматический SMS График (Недельная Диаграмма Ганта)")
 
-            # Синяя палитра оттенков
+            # Синяя гамма (Deep Navy, Royal Blue, Steel Blue)
             blue_shades = ["#1F4E78", "#2F5597", "#41719C", "#5B9BD5", "#8EA9DB"]
 
             fig = px.timeline(
@@ -236,14 +226,14 @@ if uploaded_file:
             
             fig.update_yaxes(autorange="reversed", title="Задачи / Описание работ")
             
-            # Разметка оси X по НЕДЕЛЯМ
+            # Настройка строго по неделям
             fig.update_xaxes(
                 title="Шкала времени (недели)",
-                dtick="M1", # Недельный интервал
-                tickformat="%d.%m\n(W%V)", # Понедельник и номер недели W38, W39...
+                dtick="M1", # Шаг по 1 неделе
+                tickformat="%d.%m\n(W%V)", # Формат: Понедельник (Номер недели W38)
                 showgrid=True,
                 gridcolor="#E2E8F0",
-                rangeslider=dict(visible=True) # Слайдер масштабирования
+                rangeslider=dict(visible=True)
             )
             
             fig.update_layout(
@@ -262,7 +252,7 @@ if uploaded_file:
 
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- РЕЕСТР ЗАДАЧ В ТАБЛИЦЕ ---
+            # Таблица реестра задач
             with st.expander("📋 Посмотреть детализированный реестр задач", expanded=False):
                 df_display = df_sched[['№', 'Фаза проекта', 'DESCRIPTION', 'Start', 'Finish', 'Week_Label']].copy()
                 df_display['Start'] = df_display['Start'].apply(lambda x: x.strftime('%d.%m.%Y'))
@@ -270,13 +260,13 @@ if uploaded_file:
                 df_display.columns = ['№', 'Фаза', 'Описание работы', 'Старт', 'Финиш', 'Неделя']
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # --- КНОПКА СКАЧИВАНИЯ СФОРМИРОВАННОГО ФАЙЛА ---
+            # Обязательная кнопка скачивания
             excel_file = create_excel_with_blue_gantt(schedule_data, start_date)
             
             st.markdown("---")
             with open(excel_file, "rb") as f:
                 st.download_button(
-                    label="📥 СКАЧАТЬ СФОРМИРОВАННЫЙ SMS ГРАФИК (EXCEL С СИНЕМ ГАНТОМ .XLSX)",
+                    label="📥 СКАЧАТЬ СФОРМИРОВАННЫЙ SMS ГРАФИК (EXCEL .XLSX)",
                     data=f,
                     file_name="SMS_Weekly_Gantt_Blue_Schedule.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -284,5 +274,3 @@ if uploaded_file:
                 )
         else:
             st.error("Задачи не найдены в исходных листах.")
-    else:
-        st.error("Не удалось определить дату старта из вехи START PROJECT TOGF-ENG-007-02.")
