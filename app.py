@@ -2,14 +2,15 @@ import streamlit as st
 import pandas as pd
 import datetime
 import holidays
+import plotly.express as px
 import openpyxl
 from openpyxl.chart import BarChart, Reference
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.styles import PatternFill, Font, Alignment
 
-st.set_page_config(page_title="SMS Schedule Agent", layout="wide")
+st.set_page_config(page_title="SMS Schedule Agent — Weekly Gantt Chart", layout="wide")
 
-st.title("🤖 ИИ-Агент: Генератор настоящей Диаграммы Ганта в Excel")
-st.write("Автоматическое построение графической диаграммы Ганта на отдельном листе Excel")
+st.title("📊 ИИ-Агент: Недельная Диаграмма Ганта проекта")
+st.write("Формирование недельного графического плана работ и выгрузка отчета в Excel")
 
 @st.cache_data
 def get_rf_holidays():
@@ -41,15 +42,24 @@ def extract_start_milestone(xls):
                         return dt.date()
     return None
 
-def create_true_gantt_chart(schedule_data):
+def create_excel_with_weekly_gantt(schedule_data, project_start_date):
     wb = openpyxl.Workbook()
     
-    # --- ЛИСТ 1: ТАБЛИЦА С ДАННЫМИ ---
+    # 1. Лист «Реестр задач (по неделям)»
     ws_data = wb.active
-    ws_data.title = "Реестр задач"
+    ws_data.title = "Реестр задач (Недели)"
     ws_data.views.sheetView[0].showGridLines = True
 
-    headers = ["№", "Фаза проекта", "Описание работы (DESCRIPTION)", "Дата начала", "Дата финиша", "Смещение (дней)", "Длительность (дней)"]
+    headers = [
+        "№", 
+        "Фаза проекта", 
+        "Описание работы (DESCRIPTION)", 
+        "Дата начала", 
+        "Дата финиша", 
+        "Номер недели (ISO)", 
+        "Смещение (недель)", 
+        "Длительность (недель)"
+    ]
     ws_data.append(headers)
 
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
@@ -61,20 +71,27 @@ def create_true_gantt_chart(schedule_data):
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    base_date = schedule_data[0]['Start']
+    # Приводим старт проекта к началу недели (понедельник)
+    project_start_monday = project_start_date - datetime.timedelta(days=project_start_date.weekday())
 
     for item in schedule_data:
-        offset_days = (item['Start'] - base_date).days
-        duration_days = max(1, (item['Finish'] - item['Start']).days + 1)
+        # Расчет сдвига и длительности в неделях
+        start_monday = item['Start'] - datetime.timedelta(days=item['Start'].weekday())
+        finish_sunday = item['Finish'] + datetime.timedelta(days=(6 - item['Finish'].weekday()))
         
+        offset_weeks = max(0, (start_monday - project_start_monday).days // 7)
+        duration_weeks = max(1, ((finish_sunday - start_monday).days + 1) // 7)
+        week_label = f"W{item['Start'].isocalendar()[1]} ({item['Start'].strftime('%d.%m')})"
+
         ws_data.append([
             item['№'],
             item['Фаза проекта'],
             f"{item['№']}. {item['DESCRIPTION']}",
             item['Start'].strftime("%d.%m.%Y"),
             item['Finish'].strftime("%d.%m.%Y"),
-            offset_days,
-            duration_days
+            week_label,
+            offset_weeks,
+            duration_weeks
         ])
 
     ws_data.column_dimensions['A'].width = 6
@@ -82,11 +99,12 @@ def create_true_gantt_chart(schedule_data):
     ws_data.column_dimensions['C'].width = 50
     ws_data.column_dimensions['D'].width = 14
     ws_data.column_dimensions['E'].width = 14
-    ws_data.column_dimensions['F'].width = 16
+    ws_data.column_dimensions['F'].width = 18
     ws_data.column_dimensions['G'].width = 18
+    ws_data.column_dimensions['H'].width = 20
 
-    # --- ЛИСТ 2: НАСТОЯЩИЙ ГРАФИК (ДИАГРАММА ГАНТА) ---
-    ws_chart = wb.create_sheet(title="Диаграмма Ганта")
+    # 2. Лист «График Ганта (Недельный)»
+    ws_chart = wb.create_sheet(title="График Ганта (Недели)")
     ws_chart.views.sheetView[0].showGridLines = True
 
     chart = BarChart()
@@ -95,26 +113,27 @@ def create_true_gantt_chart(schedule_data):
     chart.style = 13
     chart.grouping = "stacked"
     chart.overlap = 100
-    chart.title = f"График выполнения работ (Старт проекта: {base_date.strftime('%d.%m.%Y')})"
-    chart.height = max(12, len(schedule_data) * 0.7)
-    chart.width = 22
+    chart.title = f"Недельная Диаграмма Ганта проекта (Старт: {project_start_date.strftime('%d.%m.%Y')})"
+    chart.x_axis.title = "Шкала времени (недели)"
+    chart.y_axis.title = "Задачи"
+    chart.height = max(14, len(schedule_data) * 0.8)
+    chart.width = 24
 
-    # Ссылки на данные с Листа 1
-    data = Reference(ws_data, min_col=6, min_row=1, max_col=7, max_row=len(schedule_data) + 1)
+    # Столбцы 7 и 8: Смещение (недель) и Длительность (недель)
+    data = Reference(ws_data, min_col=7, min_row=1, max_col=8, max_row=len(schedule_data) + 1)
     cats = Reference(ws_data, min_col=3, min_row=2, max_row=len(schedule_data) + 1)
 
     chart.add_data(data, titles_from_data=True)
     chart.set_categories(cats)
 
-    # Делаем первому ряду (Смещение) прозрачный фон для эффекта Ганта
+    # Делаем прозрачным ряд со сдвигом недели
     if len(chart.series) > 0:
         chart.series[0].graphicalProperties.solidFill = "FFFFFF"
         chart.series[0].graphicalProperties.line.solidFill = "FFFFFF"
 
-    # Размещаем диаграмму на весь лист
     ws_chart.add_chart(chart, "B2")
 
-    filename = "SMS_Project_Gantt_Chart.xlsx"
+    filename = "SMS_Project_Weekly_Gantt.xlsx"
     wb.save(filename)
     return filename
 
@@ -127,7 +146,7 @@ if uploaded_file:
     start_date = extract_start_milestone(xls)
     
     if start_date:
-        st.success(f"📅 Начальная дата вехи найдена: **{start_date.strftime('%d.%m.%Y')}**")
+        st.success(f"📅 Дата старта вехи: **{start_date.strftime('%d.%m.%Y')}**")
         
         tasks = []
         for sheet in target_phases:
@@ -154,30 +173,67 @@ if uploaded_file:
             
             for idx, row in enumerate(tasks):
                 current_date = get_next_business_day(current_date, holiday_dates)
+                finish_date = current_date + datetime.timedelta(days=1)
+                
+                # Привязка к понедельникам недель
+                week_num = current_date.isocalendar()[1]
+                week_start_monday = current_date - datetime.timedelta(days=current_date.weekday())
+                
                 schedule_data.append({
                     '№': idx + 1,
                     'Фаза проекта': row['Phase'],
-                    'DESCRIPTION': row['DESCRIPTION'],
+                    'DESCRIPTION': f"{idx + 1}. {row['DESCRIPTION']}",
                     'Start': current_date,
-                    'Finish': current_date
+                    'Finish': finish_date,
+                    'Week_Num': week_num,
+                    'Week_Label': f"Неделя {week_num} ({week_start_monday.strftime('%d.%m')})"
                 })
-                current_date = get_next_business_day(current_date + datetime.timedelta(days=1), holiday_dates)
+                current_date = get_next_business_day(finish_date, holiday_dates)
 
-            # Генерация файла
-            excel_filename = create_true_gantt_chart(schedule_data)
+            df_sched = pd.DataFrame(schedule_data)
+
+            # --- ВЕБ-ДИАГРАММА ГАНТА ПО НЕДЕЛЯМ (Plotly) ---
+            st.markdown("### 📈 График Ганта по неделям")
+            
+            fig = px.timeline(
+                df_sched,
+                x_start="Start",
+                x_end="Finish",
+                y="DESCRIPTION",
+                color="Фаза проекта",
+                hover_data=["№", "Start", "Finish", "Week_Label"],
+                title="Недельный план-график выполнения работ"
+            )
+            
+            fig.update_yaxes(autorange="reversed", title="Задачи / Описание работ")
+            
+            # Переключение оси времени на недельный шаг (M1 = 1 неделя)
+            fig.update_xaxes(
+                title="Шкала времени (недели)",
+                dtick="M1",  
+                tickformat="%d.%m\n(W%V)", # Число.Месяц + Номер недели ISO
+                rangeslider=dict(visible=True)
+            )
+            
+            fig.update_layout(
+                height=max(600, len(schedule_data) * 25),
+                legend_title_text="Фазы проекта",
+                font=dict(size=12)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # --- ВЫГРУЗКА В EXCEL ---
+            excel_file = create_excel_with_weekly_gantt(schedule_data, start_date)
             
             st.markdown("---")
-            st.subheader("📊 Графический файл Excel сформирован")
-            st.write("Файл содержит 2 вкладки: **«Реестр задач»** с исходными данными и **«Диаграмма Ганта»** с полноценным графическим объектом Excel.")
-
-            # Кнопка скачивания Excel
-            with open(excel_filename, "rb") as file:
+            with open(excel_file, "rb") as f:
                 st.download_button(
-                    label="📥 СКАЧАТЬ НАСТОЯЩУЮ ДИАГРАММУ ГАНТА В EXCEL (.XLSX)",
-                    data=file,
-                    file_name="SMS_Project_Gantt_Chart.xlsx",
+                    label="📥 СКАЧАТЬ НЕДЕЛЬНУЮ ДИАГРАММУ ГАНТА В EXCEL (.XLSX)",
+                    data=f,
+                    file_name="SMS_Weekly_Gantt_Schedule.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
         else:
-            st.error("Задачи не найдены в листах фаз.")
+            st.error("Задачи не найдены в исходных листах.")
