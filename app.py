@@ -7,14 +7,12 @@ import openpyxl
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-# --- Настройка страницы ---
 st.set_page_config(
-    page_title="SMS Schedule Agent — Weekly Blue Gantt", 
+    page_title="SMS Schedule Agent — Weekly Gantt", 
     layout="wide"
 )
 
-st.title("📊 ИИ-Агент: Автоматический SMS График проекта")
-st.subheader("Диаграмма Ганта: недельная шкала | Синяя гамма | Выгрузка в Excel")
+st.title("📊 ИИ-Агент: SMS График (Недельная Диаграмма Ганта)")
 
 @st.cache_data
 def get_rf_holidays():
@@ -51,22 +49,21 @@ def extract_start_milestone(xls):
 def create_excel_with_blue_gantt(schedule_data, project_start_date):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "SMS График и Гант"
+    ws.title = "SMS График Ганта"
     ws.views.sheetView[0].showGridLines = True
 
     headers = [
         "№", 
         "Фаза проекта", 
-        "Описание работы (DESCRIPTION)", 
+        "Описание работы", 
         "Дата начала", 
         "Дата финиша", 
-        "Неделя (ISO)", 
+        "Неделя", 
         "Смещение (недель)", 
         "Длительность (недель)"
     ]
     ws.append(headers)
 
-    # Синее оформление заголовков
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     thin_border = Border(
@@ -114,19 +111,18 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     ws.column_dimensions['C'].width = 42
     ws.column_dimensions['D'].width = 13
     ws.column_dimensions['E'].width = 13
-    ws.column_dimensions['F'].width = 12
+    ws.column_dimensions['F'].width = 10
     ws.column_dimensions['G'].width = 18
     ws.column_dimensions['H'].width = 20
 
-    # Внедренная синяя недельная Диаграмма Ганта
     chart = BarChart()
     chart.type = "bar"
     chart.dir = "bar"
     chart.style = 13
     chart.grouping = "stacked"
     chart.overlap = 100
-    chart.title = f"Недельный SMS График Ганта (Старт: {project_start_date.strftime('%d.%m.%Y')})"
-    chart.x_axis.title = "Шкала времени (недели)"
+    chart.title = f"Недельная Диаграмма Ганта (Старт: {project_start_date.strftime('%d.%m.%Y')})"
+    chart.x_axis.title = "Недели"
     chart.height = max(12, len(schedule_data) * 0.75)
     chart.width = 18
 
@@ -139,22 +135,17 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     if len(chart.series) > 1:
         chart.series[0].graphicalProperties.solidFill = "FFFFFF"
         chart.series[0].graphicalProperties.line.solidFill = "FFFFFF"
-        # Темно-синяя заливка
         chart.series[1].graphicalProperties.solidFill = "1F4E78"
         chart.series[1].graphicalProperties.line.solidFill = "1F4E78"
 
     ws.add_chart(chart, "J1")
 
-    filename = "SMS_Project_Weekly_Gantt_Blue.xlsx"
+    filename = "SMS_Weekly_Gantt_Blue_Schedule.xlsx"
     wb.save(filename)
     return filename
 
-# --- Интерфейс ---
-uploaded_file = st.file_uploader(
-    "Загрузите мастер-файл проекта (PLANT_MASTER_SCHEDULE P25077.xlsx)", 
-    type=["xlsx"]
-)
-
+# --- ИНТЕРФЕЙС ---
+uploaded_file = st.file_uploader("Загрузите файл проекта (.xlsx)", type=["xlsx"])
 target_phases = ["PMSPR TOGF-ENG-008-06 Phase2", "PMSPR TOGF-ENG-008-06 Phase 3", "PMSPR TOGF-ENG-008-06 Phase4;5"]
 
 if uploaded_file:
@@ -189,28 +180,29 @@ if uploaded_file:
             
             for idx, row in enumerate(tasks):
                 current_date = get_next_business_day(current_date, holiday_dates)
-                finish_date = current_date + datetime.timedelta(days=1)
                 
-                week_num = current_date.isocalendar()[1]
+                # Привязка старта и конца строго к рабочей неделе (без дневных дыр)
                 week_start_monday = current_date - datetime.timedelta(days=current_date.weekday())
+                week_end_sunday = week_start_monday + datetime.timedelta(days=6)
+                week_num = current_date.isocalendar()[1]
                 
                 schedule_data.append({
                     '№': idx + 1,
                     'Фаза проекта': row['Phase'],
                     'DESCRIPTION': f"{idx + 1}. {row['DESCRIPTION']}",
-                    'Start': current_date,
-                    'Finish': finish_date,
+                    'Start': week_start_monday,
+                    'Finish': week_end_sunday,
                     'Week_Num': week_num,
                     'Week_Label': f"W{week_num} ({week_start_monday.strftime('%d.%m')})"
                 })
-                current_date = get_next_business_day(finish_date, holiday_dates)
+                current_date = get_next_business_day(current_date + datetime.timedelta(days=1), holiday_dates)
 
             df_sched = pd.DataFrame(schedule_data)
 
             st.markdown("---")
             st.markdown("### 📈 Автоматический SMS График (Недельная Диаграмма Ганта)")
 
-            # Синяя гамма (Deep Navy, Royal Blue, Steel Blue)
+            # Синяя гамма
             blue_shades = ["#1F4E78", "#2F5597", "#41719C", "#5B9BD5", "#8EA9DB"]
 
             fig = px.timeline(
@@ -219,25 +211,24 @@ if uploaded_file:
                 x_end="Finish",
                 y="DESCRIPTION",
                 color="Фаза проекта",
-                hover_data=["№", "Start", "Finish", "Week_Label"],
+                hover_data=["№", "Week_Label"],
                 color_discrete_sequence=blue_shades,
-                title="Недельный график выполнения работ проекта"
+                title="План-график выполнения работ (по неделям)"
             )
             
-            fig.update_yaxes(autorange="reversed", title="Задачи / Описание работ")
+            fig.update_yaxes(autorange="reversed", title="")
             
-            # Настройка строго по неделям
+            # Убираем отображение пустых дней, задаем недельный шаг
             fig.update_xaxes(
-                title="Шкала времени (недели)",
-                dtick="M1", # Шаг по 1 неделе
-                tickformat="%d.%m\n(W%V)", # Формат: Понедельник (Номер недели W38)
+                title="Недели проекта",
+                dtick="M1", # Недельный шаг
+                tickformat="%d.%m\n(W%V)",
                 showgrid=True,
-                gridcolor="#E2E8F0",
-                rangeslider=dict(visible=True)
+                gridcolor="#E2E8F0"
             )
             
             fig.update_layout(
-                height=max(550, len(schedule_data) * 26),
+                height=max(500, len(schedule_data) * 26),
                 plot_bgcolor="#FFFFFF",
                 legend=dict(
                     orientation="h",
@@ -245,22 +236,15 @@ if uploaded_file:
                     y=1.01,
                     xanchor="right",
                     x=1,
-                    title_text="Фазы проекта:"
+                    title_text="Фазы:"
                 ),
                 font=dict(size=12)
             )
 
+            # ОТОБРАЖЕНИЕ ТОЛЬКО ДИАГРАММЫ ГАНТА В ОТВЕТЕ
             st.plotly_chart(fig, use_container_width=True)
 
-            # Таблица реестра задач
-            with st.expander("📋 Посмотреть детализированный реестр задач", expanded=False):
-                df_display = df_sched[['№', 'Фаза проекта', 'DESCRIPTION', 'Start', 'Finish', 'Week_Label']].copy()
-                df_display['Start'] = df_display['Start'].apply(lambda x: x.strftime('%d.%m.%Y'))
-                df_display['Finish'] = df_display['Finish'].apply(lambda x: x.strftime('%d.%m.%Y'))
-                df_display.columns = ['№', 'Фаза', 'Описание работы', 'Старт', 'Финиш', 'Неделя']
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-            # Обязательная кнопка скачивания
+            # КНОПКА СКАЧИВАНИЯ
             excel_file = create_excel_with_blue_gantt(schedule_data, start_date)
             
             st.markdown("---")
@@ -273,4 +257,4 @@ if uploaded_file:
                     use_container_width=True
                 )
         else:
-            st.error("Задачи не найдены в исходных листах.")
+            st.error("Задачи не найдены.")
