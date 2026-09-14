@@ -7,19 +7,14 @@ import openpyxl
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-st.set_page_config(
-    page_title="SMS Schedule Agent — Weekly Gantt", 
-    layout="wide"
-)
+st.set_page_config(page_title="SMS Schedule Agent — Daily Compact Gantt", layout="wide")
 
-st.title("📊 ИИ-Агент: SMS График (Недельная Диаграмма Ганта)")
+st.title("📊 ИИ-Агент: Компактный SMS График (Ежедневная Диаграмма Ганта)")
 
 @st.cache_data
 def get_rf_holidays():
     current_year = datetime.datetime.now().year
-    ru_holidays = holidays.RU(
-        years=[current_year - 2, current_year - 1, current_year, current_year + 1, current_year + 2]
-    )
+    ru_holidays = holidays.RU(years=[current_year - 2, current_year - 1, current_year, current_year + 1, current_year + 2])
     return set(ru_holidays.keys())
 
 def is_business_day(date_val, holiday_dates):
@@ -46,31 +41,20 @@ def extract_start_milestone(xls):
                         return dt.date()
     return None
 
-def create_excel_with_blue_gantt(schedule_data, project_start_date):
+def create_excel_with_compact_gantt(schedule_data, project_start_date):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "SMS График Ганта"
     ws.views.sheetView[0].showGridLines = True
 
-    headers = [
-        "№", 
-        "Фаза проекта", 
-        "Описание работы", 
-        "Дата начала", 
-        "Дата финиша", 
-        "Неделя", 
-        "Смещение (недель)", 
-        "Длительность (недель)"
-    ]
+    headers = ["№", "Фаза проекта", "Описание работы", "Дата начала", "Дата финиша", "Смещение (дней)", "Длительность (дней)"]
     ws.append(headers)
 
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
+        left=Side(style='thin', color='D9D9D9'), right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9')
     )
     
     for col_idx in range(1, len(headers) + 1):
@@ -79,25 +63,14 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    project_start_monday = project_start_date - datetime.timedelta(days=project_start_date.weekday())
-
     for row_idx, item in enumerate(schedule_data, start=2):
-        start_monday = item['Start'] - datetime.timedelta(days=item['Start'].weekday())
-        finish_sunday = item['Finish'] + datetime.timedelta(days=(6 - item['Finish'].weekday()))
-        
-        offset_weeks = max(0, (start_monday - project_start_monday).days // 7)
-        duration_weeks = max(1, ((finish_sunday - start_monday).days + 1) // 7)
-        week_label = f"W{item['Start'].isocalendar()[1]}"
+        offset_days = (item['Start'] - project_start_date).days
+        duration_days = max(1, (item['Finish'] - item['Start']).days + 1)
 
         ws.append([
-            item['№'],
-            item['Фаза проекта'],
-            item['DESCRIPTION'],
-            item['Start'].strftime("%d.%m.%Y"),
-            item['Finish'].strftime("%d.%m.%Y"),
-            week_label,
-            offset_weeks,
-            duration_weeks
+            item['№'], item['Фаза проекта'], item['DESCRIPTION'],
+            item['Start'].strftime("%d.%m.%Y"), item['Finish'].strftime("%d.%m.%Y"),
+            offset_days, duration_days
         ])
 
         row_fill = PatternFill(start_color="F2F7FA" if row_idx % 2 == 0 else "FFFFFF", fill_type="solid")
@@ -106,14 +79,13 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
             c.fill = row_fill
             c.border = thin_border
 
-    ws.column_dimensions['A'].width = 6
+    ws.column_dimensions['A'].width = 5
     ws.column_dimensions['B'].width = 24
-    ws.column_dimensions['C'].width = 42
-    ws.column_dimensions['D'].width = 13
-    ws.column_dimensions['E'].width = 13
-    ws.column_dimensions['F'].width = 10
-    ws.column_dimensions['G'].width = 18
-    ws.column_dimensions['H'].width = 20
+    ws.column_dimensions['C'].width = 40
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 12
+    ws.column_dimensions['F'].width = 15
+    ws.column_dimensions['G'].width = 15
 
     chart = BarChart()
     chart.type = "bar"
@@ -121,12 +93,12 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
     chart.style = 13
     chart.grouping = "stacked"
     chart.overlap = 100
-    chart.title = f"Недельная Диаграмма Ганта (Старт: {project_start_date.strftime('%d.%m.%Y')})"
-    chart.x_axis.title = "Недели"
-    chart.height = max(12, len(schedule_data) * 0.75)
-    chart.width = 18
+    chart.title = f"Ежедневная Диаграмма Ганта (Старт: {project_start_date.strftime('%d.%m.%Y')})"
+    chart.x_axis.title = "Дни"
+    chart.height = max(10, len(schedule_data) * 0.6)
+    chart.width = 16
 
-    data = Reference(ws, min_col=7, min_row=1, max_col=8, max_row=len(schedule_data) + 1)
+    data = Reference(ws, min_col=6, min_row=1, max_col=7, max_row=len(schedule_data) + 1)
     cats = Reference(ws, min_col=3, min_row=2, max_row=len(schedule_data) + 1)
 
     chart.add_data(data, titles_from_data=True)
@@ -138,14 +110,14 @@ def create_excel_with_blue_gantt(schedule_data, project_start_date):
         chart.series[1].graphicalProperties.solidFill = "1F4E78"
         chart.series[1].graphicalProperties.line.solidFill = "1F4E78"
 
-    ws.add_chart(chart, "J1")
+    ws.add_chart(chart, "I1")
 
-    filename = "SMS_Weekly_Gantt_Blue_Schedule.xlsx"
+    filename = "SMS_Daily_Compact_Gantt.xlsx"
     wb.save(filename)
     return filename
 
-# --- ИНТЕРФЕЙС ---
-uploaded_file = st.file_uploader("Загрузите файл проекта (.xlsx)", type=["xlsx"])
+# --- ИНТЕРФЕЙС STREAMLIT ---
+uploaded_file = st.file_uploader("Загрузите мастер-файл проекта (.xlsx)", type=["xlsx"])
 target_phases = ["PMSPR TOGF-ENG-008-06 Phase2", "PMSPR TOGF-ENG-008-06 Phase 3", "PMSPR TOGF-ENG-008-06 Phase4;5"]
 
 if uploaded_file:
@@ -179,31 +151,25 @@ if uploaded_file:
             schedule_data = []
             
             for idx, row in enumerate(tasks):
+                # Нахождение следующего рабочего дня (без пропусков внутри выполняемой задачи)
                 current_date = get_next_business_day(current_date, holiday_dates)
-                
-                # Привязка старта и конца строго к рабочей неделе (без дневных дыр)
-                week_start_monday = current_date - datetime.timedelta(days=current_date.weekday())
-                week_end_sunday = week_start_monday + datetime.timedelta(days=6)
-                week_num = current_date.isocalendar()[1]
+                finish_date = current_date + datetime.timedelta(days=1)
                 
                 schedule_data.append({
                     '№': idx + 1,
                     'Фаза проекта': row['Phase'],
                     'DESCRIPTION': f"{idx + 1}. {row['DESCRIPTION']}",
-                    'Start': week_start_monday,
-                    'Finish': week_end_sunday,
-                    'Week_Num': week_num,
-                    'Week_Label': f"W{week_num} ({week_start_monday.strftime('%d.%m')})"
+                    'Start': current_date,
+                    'Finish': finish_date
                 })
-                current_date = get_next_business_day(current_date + datetime.timedelta(days=1), holiday_dates)
+                current_date = get_next_business_day(finish_date, holiday_dates)
 
             df_sched = pd.DataFrame(schedule_data)
 
             st.markdown("---")
-            st.markdown("### 📈 Автоматический SMS График (Недельная Диаграмма Ганта)")
+            st.markdown("### 📈 Ежедневная Компактная Диаграмма Ганта")
 
-            # Синяя гамма
-            blue_shades = ["#1F4E78", "#2F5597", "#41719C", "#5B9BD5", "#8EA9DB"]
+            blue_palette = ["#1F4E78", "#2F5597", "#41719C", "#5B9BD5", "#8EA9DB"]
 
             fig = px.timeline(
                 df_sched,
@@ -211,24 +177,28 @@ if uploaded_file:
                 x_end="Finish",
                 y="DESCRIPTION",
                 color="Фаза проекта",
-                hover_data=["№", "Week_Label"],
-                color_discrete_sequence=blue_shades,
-                title="План-график выполнения работ (по неделям)"
+                hover_data=["№", "Start", "Finish"],
+                color_discrete_sequence=blue_palette
             )
             
             fig.update_yaxes(autorange="reversed", title="")
             
-            # Убираем отображение пустых дней, задаем недельный шаг
+            # Настройки оси X: ежедневный шаг, категориальный режим без вывода пустых ней (rangebreaks)
             fig.update_xaxes(
-                title="Недели проекта",
-                dtick="M1", # Недельный шаг
-                tickformat="%d.%m\n(W%V)",
+                title="Календарь (Дни)",
+                dtick="D1",
+                tickformat="%d.%m",
                 showgrid=True,
-                gridcolor="#E2E8F0"
+                gridcolor="#E5E8EB",
+                rangebreaks=[
+                    dict(bounds=["sat", "mon"]) # Скрытие выходных (пустых) дней
+                ]
             )
             
+            # Компактная высотная привязка без растягивания ячеек
             fig.update_layout(
-                height=max(500, len(schedule_data) * 26),
+                height=max(400, len(schedule_data) * 22),
+                margin=dict(l=5, r=5, t=10, b=10),
                 plot_bgcolor="#FFFFFF",
                 legend=dict(
                     orientation="h",
@@ -236,23 +206,23 @@ if uploaded_file:
                     y=1.01,
                     xanchor="right",
                     x=1,
-                    title_text="Фазы:"
+                    title_text=""
                 ),
-                font=dict(size=12)
+                font=dict(size=11)
             )
 
-            # ОТОБРАЖЕНИЕ ТОЛЬКО ДИАГРАММЫ ГАНТА В ОТВЕТЕ
+            # Отображение только диаграммы Ганта
             st.plotly_chart(fig, use_container_width=True)
 
-            # КНОПКА СКАЧИВАНИЯ
-            excel_file = create_excel_with_blue_gantt(schedule_data, start_date)
+            # Кнопка скачивания
+            excel_file = create_excel_with_compact_gantt(schedule_data, start_date)
             
             st.markdown("---")
             with open(excel_file, "rb") as f:
                 st.download_button(
-                    label="📥 СКАЧАТЬ СФОРМИРОВАННЫЙ SMS ГРАФИК (EXCEL .XLSX)",
+                    label="📥 СКАЧАТЬ ЕЖЕДНЕВНЫЙ ГРАФИК (EXCEL .XLSX)",
                     data=f,
-                    file_name="SMS_Weekly_Gantt_Blue_Schedule.xlsx",
+                    file_name="SMS_Daily_Compact_Gantt_Blue.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
