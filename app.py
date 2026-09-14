@@ -33,27 +33,70 @@ def get_rf_holidays():
         
     return list(holiday_dates)
 
+# Поиск автоматической даты старта в Excel
+def extract_start_date_from_excel(xls, phases):
+    for sheet in phases:
+        if sheet in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet, header=None)
+            
+            # Поиск столбца START DATE / Baseline Start / Start
+            start_col = None
+            header_row = None
+            for r in range(min(15, df.shape[0])):
+                for c in range(df.shape[1]):
+                    val = str(df.iloc[r, c]).strip().upper()
+                    if val in ['START DATE', 'START', 'BASELINE START', 'PLAN START', 'ДАТА НАЧАЛА']:
+                        start_col = c
+                        header_row = r
+                        break
+                if start_col is not None:
+                    break
+            
+            if start_col is not None and header_row is not None:
+                # Извлекаем первую валидную дату из этого столбца
+                for r in range(header_row + 1, df.shape[0]):
+                    val = df.iloc[r, start_col]
+                    if pd.notna(val):
+                        dt = pd.to_datetime(val, errors='coerce')
+                        if pd.notna(dt):
+                            return dt.date()
+    return None
+
 # Загрузка файла Excel пользователем
 uploaded_file = st.file_uploader("Загрузите шаблон Excel (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
-start_date = st.date_input("Выберите дату старта проекта:", datetime.date.today())
+
+phases = [
+    'PMSPR TOGF-ENG-008-06 Phase2',
+    'PMSPR TOGF-ENG-008-06 Phase 3',
+    'PMSPR TOGF-ENG-008-06 Phase4;5'
+]
+
+detected_start_date = None
+if uploaded_file:
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        detected_start_date = extract_start_date_from_excel(xls, phases)
+    except Exception:
+        pass
+
+default_date = detected_start_date if detected_start_date else datetime.date.today()
+
+if detected_start_date:
+    st.info(f"🎯 Дата начала проекта автоматически определена из файла Excel: **{detected_start_date.strftime('%d.%m.%Y')}**")
+
+start_date = st.date_input("Дата старта проекта (определена из файла или выберите вручную):", default_date)
 
 if uploaded_file and st.button("Сформировать SMS-график"):
     with st.spinner("Агент обрабатывает данные и производственный календарь..."):
         try:
             xls = pd.ExcelFile(uploaded_file)
             
-            phases = [
-                'PMSPR TOGF-ENG-008-06 Phase2',
-                'PMSPR TOGF-ENG-008-06 Phase 3',
-                'PMSPR TOGF-ENG-008-06 Phase4;5'
-            ]
-            
             tasks = []
             for sheet in phases:
                 if sheet in xls.sheet_names:
                     df = pd.read_excel(xls, sheet_name=sheet, header=None)
                     desc_col = None
-                    for r in range(min(12, df.shape[0])):
+                    for r in range(min(15, df.shape[0])):
                         for c in range(df.shape[1]):
                             if str(df.iloc[r, c]).strip() == 'DESCRIPTION':
                                 desc_col = c
@@ -91,7 +134,7 @@ if uploaded_file and st.button("Сформировать SMS-график"):
             
             res_df = pd.DataFrame(schedule)
             st.success(f"График успешно сформирован! Извлечено задач: {len(res_df)}")
-
+            
             st.dataframe(res_df, use_container_width=True)
             
             excel_out = "SMS_Schedule_Result.xlsx"
