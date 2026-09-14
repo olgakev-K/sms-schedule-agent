@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -27,11 +26,28 @@ def get_rf_holidays():
     except Exception:
         pass
         
-    ru_holidays = holidays.RU(years=[datetime.datetime.now().year - 1, datetime.datetime.now().year, datetime.datetime.now().year + 1, datetime.datetime.now().year + 2])
+    current_year = datetime.datetime.now().year
+    ru_holidays = holidays.RU(years=[current_year - 2, current_year - 1, current_year, current_year + 1, current_year + 2, current_year + 3])
     for d in ru_holidays.keys():
-        holiday_dates.add(np.datetime64(d, 'D'))
+        holiday_dates.add(d)
         
-    return list(holiday_dates)
+    return holiday_dates
+
+# Функция проверки, является ли день рабочим (пн-пт и не праздник РФ)
+def is_business_day(date_val, holiday_dates):
+    # 5 = Суббота, 6 = Воскресенье
+    if date_val.weekday() >= 5:
+        return False
+    if date_val in holiday_dates:
+        return False
+    return True
+
+# Переход к следующему рабочему дню
+def get_next_business_day(date_val, holiday_dates):
+    cur = date_val
+    while not is_business_day(cur, holiday_dates):
+        cur += datetime.timedelta(days=1)
+    return cur
 
 # Поиск названия проекта и даты начала в Excel
 def extract_project_info(xls, phases):
@@ -55,7 +71,7 @@ def extract_project_info(xls, phases):
         if project_name != "Не определен":
             break
 
-    # 2. Точечный поиск даты старта в колонках 'PLANNED START DATE', 'Дата / Date'
+    # 2. Точечный поиск даты старта в колонках
     target_headers = ['PLANNED START DATE', 'PLANNED START', 'ДАТА / DATE', 'START DATE', 'DATE']
     
     for sheet in phases:
@@ -67,7 +83,6 @@ def extract_project_info(xls, phases):
                     val = str(df.iloc[r, c]).strip().upper()
                     
                     if any(hdr in val for hdr in target_headers):
-                        # Ищем первую корректную дату ниже заголовка
                         for r_val in range(r + 1, df.shape[0]):
                             cell_val = df.iloc[r_val, c]
                             if pd.notna(cell_val) and str(cell_val).strip().upper() not in ['N/A', 'NONE', 'CLOSED']:
@@ -117,28 +132,26 @@ if uploaded_file:
 
                     df_tasks = pd.DataFrame(tasks)
                     holiday_dates = get_rf_holidays()
-                    bus_cal = np.busday_calendar(weekmask='1111100', holidays=holiday_dates)
                     
-                    current_date = np.datetime64(project_start_date, 'D')
+                    current_date = project_start_date
                     schedule = []
                     
                     for idx, row in df_tasks.iterrows():
-                        if not np.is_busday(current_date, busdaycal=bus_cal):
-                            current_date = np.busday_offset(current_date, 0, roll='forward', busdaycal=bus_cal)
+                        current_date = get_next_business_day(current_date, holiday_dates)
                         
                         t_start = current_date
-                        t_end = np.busday_offset(t_start, 0, roll='forward', busdaycal=bus_cal)
+                        t_end = t_start # Однодневный шаг на задачу
                         
                         schedule.append({
                             '№': idx + 1,
                             'Проект': project_name,
                             'Фаза проекта': row['Phase'],
                             'DESCRIPTION': row['DESCRIPTION'],
-                            'Дата начала (расчет)': pd.to_datetime(str(t_start)).strftime('%d.%m.%Y'),
-                            'Дата окончания (расчет)': pd.to_datetime(str(t_end)).strftime('%d.%m.%Y')
+                            'Дата начала (расчет)': t_start.strftime('%d.%m.%Y'),
+                            'Дата окончания (расчет)': t_end.strftime('%d.%m.%Y')
                         })
                         
-                        current_date = np.busday_offset(t_end, 1, roll='forward', busdaycal=bus_cal)
+                        current_date = get_next_business_day(current_date + datetime.timedelta(days=1), holiday_dates)
                     
                     res_df = pd.DataFrame(schedule)
                     st.success(f"График успешно сформирован! Извлечено задач: {len(res_df)}")
