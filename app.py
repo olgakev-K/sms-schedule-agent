@@ -74,6 +74,8 @@ def generate_excel_with_gantt(schedule_data, start_date, total_days=30):
     task_bar_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     
     header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    # Шрифт для столбцов диаграммы (размер 9)
+    gantt_header_font = Font(name="Calibri", size=9, bold=True, color="FFFFFF")
     regular_font = Font(name="Calibri", size=10)
     
     thin_border = Border(
@@ -116,9 +118,10 @@ def generate_excel_with_gantt(schedule_data, start_date, total_days=30):
         c_idx = timeline_start_col + i
         cell = ws.cell(row=1, column=c_idx, value=week['label'])
         cell.fill = gantt_header_fill
-        cell.font = header_font
+        cell.font = gantt_header_font # Применен шрифт 9
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.column_dimensions[get_column_letter(c_idx)].width = 10  # Компактная ширина колонки недели
+        # Ширина столбца изменена на 4
+        ws.column_dimensions[get_column_letter(c_idx)].width = 4  
 
     # Заполнение данных и отрисовка Ганта по неделям
     for row_idx, item in enumerate(schedule_data, 2):
