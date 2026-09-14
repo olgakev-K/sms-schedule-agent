@@ -44,7 +44,7 @@ def extract_start_date_from_excel(xls, phases):
                 for c in range(df.shape[1]):
                     val = str(df.iloc[r, c]).strip().upper()
                     # Ищем ключевые наименования колонок старта
-                    if val in ['START DATE', 'START', 'BASELINE START', 'PLAN START', 'ДАТА НАЧАЛА', 'START_DATE']:
+                    if val in ['DATE', 'START', 'BASELINE START', 'PLAN START', 'ДАТА НАЧАЛА', 'START_DATE']:
                         # Сканируем значения ниже найденного заголовка
                         for r_val in range(r + 1, df.shape[0]):
                             cell_val = df.iloc[r_val, c]
@@ -72,7 +72,7 @@ if uploaded_file:
         if project_start_date:
             st.success(f"📅 Дата старта проекта успешно извлечена из файла: **{project_start_date.strftime('%d.%m.%Y')}**")
         else:
-            st.error("❌ Не удалось найти колонку с датой начала (START DATE) в файле. Проверьте структуру Excel.")
+            st.error("❌ Не удалось найти колонку с датой начала (DATE) в файле. Проверьте структуру Excel.")
     except Exception as e:
         st.error(f"Ошибка при чтении файла: {e}")
 
