@@ -92,7 +92,7 @@ if uploaded_file and st.button("Сформировать SMS-график"):
             res_df = pd.DataFrame(schedule)
             st.success(f"График успешно сформирован! Извлечено задач: {len(res_df)}")
 
-st.dataframe(res_df, use_container_width=True)
+            st.dataframe(res_df, use_container_width=True)
             
             excel_out = "SMS_Schedule_Result.xlsx"
             with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
