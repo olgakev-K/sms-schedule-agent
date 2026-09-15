@@ -1,51 +1,57 @@
-import streamlit as st
-import pandas as pd
+import io
 import datetime
-import requests
-from bs4 import BeautifulSoup
-import holidays
+from datetime import timedelta
+import pandas as pd
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 import plotly.express as px
+import streamlit as st
+import holidays
 
-st.set_page_config(page_title="SMS Schedule Agent", layout="wide")
+# -----------------------------------------------------------------------------
+# 1. КОНФИГУРАЦИЯ СТРАНИЦЫ
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="SMS-график проекта (TOGF-ENG)",
+    page_icon="📅",
+    layout="wide"
+)
 
-st.title("🤖 ИИ-Агент: Генератор SMS-графика проекта")
-st.write("Автоматический расчет календарного плана с визуализацией в виде Диаграммы Ганта")
+st.title("📅 Генератор SMS-графика проекта запуска (TOGF-ENG)")
+st.caption("Точный расчет параллельных задач по номерам недель (W) и производственному календарю РФ")
 
-# 4. Получение праздников РФ по производственному календарю
+# -----------------------------------------------------------------------------
+# 2. КАЛЕНДАРЬ РФ И РАБОЧИЕ ДНИ
+# -----------------------------------------------------------------------------
 @st.cache_data
-def get_rf_holidays():
-    url = "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    holiday_dates = set()
+def get_ru_holidays_set(year_start: int, year_end: int):
+    """Множество государственных праздников РФ."""
+    ru_holidays = set()
+    for yr in range(year_start, year_end + 1):
+        for d in holidays.RU(years=yr).keys():
+            if isinstance(d, datetime.datetime):
+                ru_holidays.add(d.date())
+            else:
+                ru_holidays.add(d)
+    return ru_holidays
+
+def check_week_has_holidays(week_start: datetime.date, week_end: datetime.date, ru_holidays: set) -> bool:
+    """Проверка наличия официального праздника РФ на неделе."""
+    curr = week_start
+    while curr <= week_end:
+        if curr in ru_holidays:
+            return True
+        curr += timedelta(days=1)
+    return False
+
+# -----------------------------------------------------------------------------
+# 3. ПАРСИНГ И МАТРИЧНЫЙ РАСЧЕТ ДАТ
+# -----------------------------------------------------------------------------
+def process_excel_schedule(file_bytes, project_start_date: datetime.date):
+    wb = openpyxl.load_workbook(filename=io.BytesIO(file_bytes), data_only=True)
     
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            for td in soup.find_all('td', class_=['holiday', 'work_short']):
-                pass
-    except Exception:
-        pass
-        
-    current_year = datetime.datetime.now().year
-    ru_holidays = holidays.RU(years=[current_year - 2, current_year - 1, current_year, current_year + 1, current_year + 2, current_year + 3])
-    for d in ru_holidays.keys():
-        holiday_dates.add(d)
-        
-    return holiday_dates
-
-def is_business_day(date_val, holiday_dates):
-    if date_val.weekday() >= 5 or date_val in holiday_dates:
-        return False
-    return True
-
-def get_next_business_day(date_val, holiday_dates):
-    cur = date_val
-    while not is_business_day(cur, holiday_dates):
-        cur += datetime.timedelta(days=1)
-    return cur
-
-# 1. Извлечение вехи/даты старта из "START PROJECT TOGF-ENG-007-02"
+    # 1. Вехи проекта (START PROJECT TOGF-ENG-007-02)
 def extract_start_milestone(xls):
     sheet_name = "START PROJECT TOGF-ENG-007-02"
     if sheet_name in xls.sheet_names:
@@ -60,120 +66,314 @@ def extract_start_milestone(xls):
     return None
 
 uploaded_file = st.file_uploader("Загрузите файл (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
-
-# 2. Последовательность вкладок
-target_phases = [
-    "PMSPR TOGF-ENG-008-06 Phase2",
-    "PMSPR TOGF-ENG-008-06 Phase 3",
-    "PMSPR TOGF-ENG-008-06 Phase4;5"
-]
-
-if uploaded_file:
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-        start_date = extract_start_milestone(xls)
+    
+    # 2. Целевые вкладки
+    target_sheets = [
+        ("PMSPR TOGF-ENG-008-06 Phase2", "Phase 2"),
+        ("PMSPR TOGF-ENG-008-06 Phase 3", "Phase 3"),
+        ("PMSPR TOGF-ENG-008-06 Phase4;5", "Phase 4;5")
+    ]
+    
+    tasks = []
+    ru_holidays = get_ru_holidays_set(project_start_date.year, project_start_date.year + 5)
+    
+    for sheet_name, phase_label in target_sheets:
+        if sheet_name not in wb.sheetnames:
+            continue
+            
+        ws = wb[sheet_name]
+        desc_col_idx = None
+        header_row_idx = None
         
-        if start_date:
-            st.success(f"📅 Дата вехи извлечена из листа 'START PROJECT TOGF-ENG-007-02': **{start_date.strftime('%d.%m.%Y')}**")
-            
-            if st.button("🚀 Сформировать автоматический SMS-график"):
-                with st.spinner("Формирование графика и построение диаграммы Ганта..."):
-                    tasks = []
-                    
-                    # Извлечение DESCRIPTION из указанных вкладок по порядку
-                    for sheet in target_phases:
-                        if sheet in xls.sheet_names:
-                            df = pd.read_excel(xls, sheet_name=sheet, header=None)
-                            desc_col = None
-                            
-                            for r in range(min(25, df.shape[0])):
-                                for c in range(df.shape[1]):
-                                    if str(df.iloc[r, c]).strip().upper() == 'DESCRIPTION':
-                                        desc_col = c
-                                        break
-                                if desc_col is not None:
-                                    break
-                                    
-                            if desc_col is not None:
-                                for val in df.iloc[10:, desc_col].dropna():
-                                    val_str = str(val).strip()
-                                    if val_str and val_str.upper() != 'DESCRIPTION':
-                                        tasks.append({'Phase': sheet, 'DESCRIPTION': val_str})
+        # Шаг А: Поиск строки с описанием задач (DESCRIPTION)
+        for r in range(1, min(30, ws.max_row + 1)):
+            for c in range(1, min(20, ws.max_column + 1)):
+                val = str(ws.cell(row=r, column=c).value or "").strip().upper()
+                if "DESCRIPTION" in val or "ОПИСАНИЕ" in val or "ДЕЙСТВИЕ" in val:
+                    desc_col_idx = c
+                    header_row_idx = r
+                    break
+            if desc_col_idx:
+                break
+                
+        if not desc_col_idx:
+            desc_col_idx = 1
+            header_row_idx = 1
 
-                    if tasks:
-                        df_tasks = pd.DataFrame(tasks)
-                        holiday_dates = get_rf_holidays()
-                        
-                        current_date = start_date
-                        schedule = []
-                        gantt_data = []
-                        
-                        # Расчет дат с учетом рабочих дней РФ
-                        for idx, row in df_tasks.iterrows():
-                            current_date = get_next_business_day(current_date, holiday_dates)
-                            
-                            t_start = current_date
-                            t_end = t_start + datetime.timedelta(days=1) # Для корректного отображения полосы в Ганте
-                            
-                            task_name = f"{idx + 1}. {row['DESCRIPTION'][:60]}..." if len(row['DESCRIPTION']) > 60 else f"{idx + 1}. {row['DESCRIPTION']}"
-                            
-                            schedule.append({
-                                '№': idx + 1,
-                                'Фаза проекта': row['Phase'],
-                                'DESCRIPTION': row['DESCRIPTION'],
-                                'Дата начала (расчет)': t_start.strftime('%d.%m.%Y'),
-                                'Дата окончания (расчет)': t_start.strftime('%d.%m.%Y')
-                            })
-                            
-                            gantt_data.append({
-                                'Task': task_name,
-                                'Start': t_start,
-                                'Finish': t_end,
-                                'Phase': row['Phase'],
-                                'Full_Description': row['DESCRIPTION']
-                            })
-                            
-                            current_date = get_next_business_day(t_start + datetime.timedelta(days=1), holiday_dates)
-                        
-                        res_df = pd.DataFrame(schedule)
-                        gantt_df = pd.DataFrame(gantt_data)
-                        
-                        st.subheader("📊 Диаграмма Ганта проекта")
-                        
-                        # Построение диаграммы Ганта через Plotly
-                        fig = px.timeline(
-                            gantt_df, 
-                            x_start="Start", 
-                            x_end="Finish", 
-                            y="Task", 
-                            color="Phase",
-                            hover_data=["Full_Description"],
-                            title="Календарный SMS-график запуска в серийное производство"
-                        )
-                        fig.update_yaxes(autorange="reversed") # Порядок задач сверху вниз
-                        fig.update_layout(
-                            height=max(500, len(gantt_df) * 25),
-                            xaxis_title="Дата",
-                            yaxis_title="Задачи (DESCRIPTION)",
-                            legend_title="Фаза проекта"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        st.subheader("📋 Таблица календарного плана")
-                        st.dataframe(res_df, use_container_width=True)
-                        
-                        excel_out = "SMS_Schedule_Result.xlsx"
-                        with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
-                            res_df.to_excel(writer, index=False, sheet_name='SMS Schedule')
-                        
-                        with open(excel_out, "rb") as f:
-                            st.download_button("📥 Скачать итоговый Excel", f, file_name="SMS_Schedule_Result.xlsx")
-                    else:
-                        st.error("❌ Не удалось извлечь задачи из столбцов DESCRIPTION.")
-        else:
-            st.error("❌ Не удалось найти дату старта на вкладке 'START PROJECT TOGF-ENG-007-02'.")
+        # Шаг Б: Поиск шапки матрицы недель (W1, W2, W3... или 1, 2, 3...)
+        # Карта: col_index -> week_number
+        week_col_map = {}
+        for r in range(max(1, header_row_idx - 3), min(header_row_idx + 3, ws.max_row + 1)):
+            for c in range(desc_col_idx + 1, ws.max_column + 1):
+                val = str(ws.cell(row=r, column=c).value or "").strip().upper()
+                # Распознаем формат 'W1', 'W01', 'WEEK 1' или просто числовые значения недель
+                if val.startswith("W") and val[1:].isdigit():
+                    week_col_map[c] = int(val[1:])
+                elif val.isdigit() and int(val) < 200:
+                    week_col_map[c] = int(val)
+            if len(week_col_map) >= 3:
+                break
+
+        # Если не нашли явные 'W1', ищем любые закрашенные колонки матрицы
+        if not week_col_map:
+            # Находим первую активную матричную колонку
+            start_matrix_col = None
+            for c in range(desc_col_idx + 5, ws.max_column + 1):
+                for r_check in range(header_row_idx + 1, min(header_row_idx + 50, ws.max_row + 1)):
+                    cell = ws.cell(row=r_check, column=c)
+                    if cell.value or (cell.fill and cell.fill.fill_type and cell.fill.fill_type != 'none'):
+                        start_matrix_col = c
+                        break
+                if start_matrix_col:
+                    break
             
-    except Exception as e:
-        st.error(f"Ошибка при обработке файла: {e}")
+            if start_matrix_col:
+                for c in range(start_matrix_col, ws.max_column + 1):
+                    week_col_map[c] = (c - start_matrix_col) + 1
+
+        if not week_col_map:
+            continue
+
+        # Шаг В: Считывание задач и закрашенных недель
+        for r in range(header_row_idx + 1, ws.max_row + 1):
+            desc_val = ws.cell(row=r, column=desc_col_idx).value
+            if not desc_val or str(desc_val).strip() == "":
+                continue
+                
+            task_desc = str(desc_val).strip()
+            
+            min_w = None
+            max_w = None
+            
+            for c, w_num in week_col_map.items():
+                cell = ws.cell(row=r, column=c)
+                fill = cell.fill
+                
+                has_fill = False
+                if fill and fill.fill_type and fill.fill_type != 'none':
+                    fg = getattr(fill.start_color, 'rgb', None) or getattr(fill.start_color, 'theme', None)
+                    if fg and str(fg) not in ['00000000', 'FFFFFFFF', '0']:
+                        has_fill = True
+                
+                has_val = cell.value is not None and str(cell.value).strip() != ""
+                
+                if has_fill or has_val:
+                    if min_w is None or w_num < min_w:
+                        min_w = w_num
+                    if max_w is None or w_num > max_w:
+                        max_w = w_num
+            
+            # Если нет отметок в матрице, по умолчанию ставим неделе W1
+            if min_w is None:
+                min_w = 1
+                max_w = 1
+                
+            duration_weeks = (max_w - min_w) + 1
+            
+            # Расчет точных дат:
+            # Неделя 1 (W1) начинается точно в project_start_date
+            task_start_date = project_start_date + timedelta(days=(min_w - 1) * 7)
+            task_end_date = project_start_date + timedelta(days=max_w * 7 - 1)
+            
+            tasks.append({
+                "phase": phase_label,
+                "description": task_desc,
+                "start_week_num": min_w,
+                "end_week_num": max_w,
+                "duration_weeks": duration_weeks,
+                "start_date": task_start_date,
+                "end_date": task_end_date
+            })
+
+    if not tasks:
+        return None, None, None
+
+    processed_tasks = []
+    for idx, t in enumerate(tasks, 1):
+        t["id"] = idx
+        processed_tasks.append(t)
+
+    df_tasks = pd.DataFrame(processed_tasks)
+    
+    # Сетка всех недель от W1 до максимальной недели проекта
+    min_project_w = df_tasks["start_week_num"].min()
+    max_project_w = df_tasks["end_week_num"].max()
+    
+    weeks_info = []
+    for w_num in range(min_project_w, max_project_w + 1):
+        w_start = project_start_date + timedelta(days=(w_num - 1) * 7)
+        w_end = w_start + timedelta(days=6)
+        has_holiday = check_week_has_holidays(w_start, w_end, ru_holidays)
+        
+        weeks_info.append({
+            "week_num": w_num,
+            "week_label": f"W{w_num}",
+            "start_date": w_start,
+            "end_date": w_end,
+            "has_holiday": has_holiday
+        })
+
+    return df_tasks, weeks_info, milestones
+
+# -----------------------------------------------------------------------------
+# 4. ФОРМИРОВАНИЕ ИТОГОВОГО EXCEL
+# -----------------------------------------------------------------------------
+def generate_excel_report(df_tasks, weeks_info, milestones):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SMS Schedule"
+    ws.views.sheetView[0].showGridLines = True
+    
+    font_header = Font(name="Arial", size=9, bold=True, color="FFFFFF")
+    font_body = Font(name="Arial", size=9)
+    font_bold = Font(name="Arial", size=9, bold=True)
+    
+    fill_header = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    fill_gantt_bar = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    fill_holiday = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+
+    headers = ["№", "Фаза (Phase)", "Описание действия (Description)", "Длит. (нед)", "Старт W", "Финиш W", "Дата начала", "Дата окончания"]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+
+    start_week_col = len(headers) + 1
+    for i, w in enumerate(weeks_info):
+        col_idx = start_week_col + i
+        label = f"{w['week_label']} 🎉" if w["has_holiday"] else w["week_label"]
+        cell = ws.cell(row=1, column=col_idx, value=label)
+        cell.font = Font(name="Arial", size=9, bold=True, color="9C0006" if w["has_holiday"] else "FFFFFF")
+        cell.fill = fill_holiday if w["has_holiday"] else fill_header
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+        
+        ws.column_dimensions[get_column_letter(col_idx)].width = 4
+
+    for row_idx, task in df_tasks.iterrows():
+        r = row_idx + 2
+        vals = [
+            task["id"],
+            task["phase"],
+            task["description"],
+            task["duration_weeks"],
+            f"W{task['start_week_num']}",
+            f"W{task['end_week_num']}",
+            task["start_date"].strftime("%d.%m.%Y"),
+            task["end_date"].strftime("%d.%m.%Y")
+        ]
+        
+        for c_idx, val in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c_idx, value=val)
+            cell.font = font_body
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="center" if c_idx in [1, 4, 5, 6, 7, 8] else "left", vertical="center")
+
+        # Отрисовка баров Ганта
+        for w_idx, w in enumerate(weeks_info):
+            c_idx = start_week_col + w_idx
+            cell = ws.cell(row=r, column=c_idx)
+            cell.border = thin_border
+            
+            current_w_num = w["week_num"]
+            if task['start_week_num'] <= current_w_num <= task['end_week_num']:
+                cell.fill = fill_gantt_bar
+                cell.value = "█"
+                cell.font = Font(name="Arial", size=9, color="2F5597")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    base_widths = [6, 15, 50, 11, 10, 10, 13, 13]
+    for idx, w in enumerate(base_widths, 1):
+        ws.column_dimensions[get_column_letter(idx)].width = w
+
+    ws.freeze_panes = "I2"
+
+    if milestones:
+        ws_m = wb.create_sheet(title="Milestones")
+        ws_m.views.sheetView[0].showGridLines = True
+        ws_m.cell(row=1, column=1, value="Вехи проекта (START PROJECT TOGF-ENG-007-02)").font = font_bold
+        for idx, m_text in enumerate(milestones, 2):
+            ws_m.cell(row=idx, column=1, value=m_text).font = font_body
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+# -----------------------------------------------------------------------------
+# 5. ИНТЕРФЕЙС STREAMLIT
+# -----------------------------------------------------------------------------
+st.sidebar.header("⚙️ Входные параметры")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Загрузите PLANT_MASTER_SCHEDULE P25077.xlsx", 
+    type=["xlsx"]
+)
+
+start_date_input = st.sidebar.date_input(
+    "Дата начала проекта (Неделя W1)",
+    value=datetime.date.today(),
+    format="DD.MM.YYYY"
+)
+
+if uploaded_file is not None:
+    file_bytes = uploaded_file.getvalue()
+    
+    with st.spinner("Агент сканирует заголовки недель и рассчитывает даты..."):
+        df_tasks, weeks_info, milestones = process_excel_schedule(file_bytes, start_date_input)
+    
+    if df_tasks is not None and not df_tasks.empty:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Всего задач", len(df_tasks))
+        c2.metric("Общий горизонт (нед)", len(weeks_info))
+        c3.metric("Старт проекта", df_tasks["start_date"].min().strftime("%d.%m.%Y"))
+        c4.metric("Окончание проекта", df_tasks["end_date"].max().strftime("%d.%m.%Y"))
+
+        st.markdown("---")
+
+        st.subheader("📊 Интерактивный SMS-график (Гант)")
+        fig = px.timeline(
+            df_tasks,
+            x_start="start_date",
+            x_end="end_date",
+            y="description",
+            color="phase",
+            hover_data=["duration_weeks", "start_week_num", "end_week_num"],
+            labels={"description": "Описание действия", "phase": "Фаза", "start_week_num": "Старт W", "end_week_num": "Финиш W"}
+        )
+        fig.update_yaxes(autorange="reversed")
+        fig.update_layout(height=min(800, 150 + len(df_tasks) * 25))
+        st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("📋 Детализация календарного плана (Таблица)"):
+            st.dataframe(
+                df_tasks[["id", "phase", "description", "start_week_num", "end_week_num", "duration_weeks", "start_date", "end_date"]],
+                use_container_width=True
+            )
+
+        st.markdown("---")
+        st.subheader("📥 Скачать SMS-график")
+        
+        excel_file_data = generate_excel_report(df_tasks, weeks_info, milestones)
+        
+        st.download_button(
+            label="💾 Скачать итоговый Excel-файл с диаграммой Ганта",
+            data=excel_file_data,
+            file_name=f"SMS_Schedule_P25077_{start_date_input.strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True
+        )
+    else:
+        st.error("Не удалось прочитать задачи или шапку недель в файле.")
 else:
-    st.info("ℹ️ Для запуска расчета загрузите Excel-файл.")
+    st.info("👈 Загрузите исходный Excel-файл на панели слева.")
