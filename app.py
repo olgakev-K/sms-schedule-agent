@@ -6,13 +6,16 @@ from bs4 import BeautifulSoup
 import holidays
 import plotly.express as px
 import plotly.graph_objects as go
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="SMS Schedule Agent", layout="wide")
 
 st.title("🤖 ИИ-Агент: Генератор SMS-графика проекта")
 st.write("Автоматический расчет календарного плана с визуализацией в виде Диаграммы Ганта")
 
-# 4. Получение праздников РФ по производственному календарю
+
+# ---------- Праздники РФ ----------
 @st.cache_data
 def get_rf_holidays():
     url = "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/"
@@ -50,7 +53,20 @@ def get_next_business_day(date_val, holiday_dates):
     return cur
 
 
-# 1. Извлечение вехи/даты старта из "START PROJECT TOGF-ENG-007-02"
+def add_business_days(start_date, n_days, holiday_dates):
+    """Возвращает дату, отстоящую от start_date на n рабочих дней (n_days >= 0).
+    n_days=0 -> первый рабочий день, начиная с start_date."""
+    cur = start_date
+    added = 0
+    while True:
+        cur = get_next_business_day(cur, holiday_dates)
+        if added == n_days:
+            return cur
+        cur += datetime.timedelta(days=1)
+        added += 1
+
+
+# ---------- Извлечение даты старта ----------
 def extract_start_milestone(xls):
     sheet_name = "START PROJECT TOGF-ENG-007-02"
     if sheet_name in xls.sheet_names:
@@ -65,20 +81,17 @@ def extract_start_milestone(xls):
     return None
 
 
-# 1.1. Извлечение списка вех из "START PROJECT TOGF-ENG-007-02"
-#      Колонка B (индекс 1) — названия, строки 30–35
-#      Колонка C (индекс 2) — даты,     строки 30–35
+# ---------- Вехи из START-листа ----------
 def extract_milestones_from_start_sheet(xls):
     sheet_name = "START PROJECT TOGF-ENG-007-02"
     milestones = []
     if sheet_name in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-        # строки 30–35 в 1-индексации => индексы 29–34 в pandas
-        for r in range(29, 35):
+        for r in range(29, 35):  # строки 30–35
             if r >= df.shape[0]:
                 break
-            name_val = df.iloc[r, 1] if df.shape[1] > 1 else None  # колонка B
-            date_val = df.iloc[r, 2] if df.shape[1] > 2 else None  # колонка C
+            name_val = df.iloc[r, 1] if df.shape[1] > 1 else None  # B
+            date_val = df.iloc[r, 2] if df.shape[1] > 2 else None  # C
             if pd.notna(name_val) and str(name_val).strip():
                 dt = pd.to_datetime(date_val, errors='coerce')
                 milestones.append({
@@ -89,9 +102,7 @@ def extract_milestones_from_start_sheet(xls):
     return milestones
 
 
-# 1.2. Извлечение вех-маркеров из "PMSPR TOGF-ENG-008-06 Phase 3"
-#      Колонка BK (индекс 63) — строка 9 (индекс 8) — название
-#      Колонка BK (индекс 63) — строка 10 (индекс 9) — дата
+# ---------- Вехи из Phase 3 (BK9 / BK10) ----------
 def extract_phase3_milestones(xls):
     sheet_name = "PMSPR TOGF-ENG-008-06 Phase 3"
     milestones = []
@@ -113,12 +124,14 @@ def extract_phase3_milestones(xls):
 
 uploaded_file = st.file_uploader("Загрузите файл (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
 
-# 2. Последовательность вкладок
 target_phases = [
     "PMSPR TOGF-ENG-008-06 Phase2",
     "PMSPR TOGF-ENG-008-06 Phase 3",
     "PMSPR TOGF-ENG-008-06 Phase4;5"
 ]
+
+# Длительность по умолчанию для одной задачи (в рабочих днях)
+TASK_DURATION_WORKDAYS = 1
 
 if uploaded_file:
     try:
@@ -126,13 +139,13 @@ if uploaded_file:
         start_date = extract_start_milestone(xls)
 
         if start_date:
-            st.success(f"📅 Дата вехи извлечена из листа 'START PROJECT TOGF-ENG-007-02': **{start_date.strftime('%d.%m.%Y')}**")
+            st.success(f"📅 Дата вехи извлечена из листа 'START PROJECT TOGF-ENG-007-02': "
+                       f"**{start_date.strftime('%d.%m.%Y')}**")
 
             if st.button("🚀 Сформировать автоматический SMS-график"):
                 with st.spinner("Формирование графика и построение диаграммы Ганта..."):
                     tasks = []
 
-                    # Извлечение DESCRIPTION из указанных вкладок по порядку
                     for sheet in target_phases:
                         if sheet in xls.sheet_names:
                             df = pd.read_excel(xls, sheet_name=sheet, header=None)
@@ -156,16 +169,23 @@ if uploaded_file:
                         df_tasks = pd.DataFrame(tasks)
                         holiday_dates = get_rf_holidays()
 
-                        current_date = start_date
                         schedule = []
                         gantt_data = []
 
-                        # Расчет дат с учетом рабочих дней РФ
-                        for idx, row in df_tasks.iterrows():
-                            current_date = get_next_business_day(current_date, holiday_dates)
+                        # --- корректный расчёт дат ---
+                        # Каждая задача начинается с первого рабочего дня после предыдущей
+                        # и длится TASK_DURATION_WORKDAYS рабочих дней.
+                        cursor = start_date  # стартовая точка (нерабочий день допустим — сдвинется)
 
-                            t_start = current_date
-                            t_end = t_start + datetime.timedelta(days=1)  # для отображения полосы в Ганте
+                        for idx, row in df_tasks.iterrows():
+                            # начало — следующий рабочий день от cursor
+                            t_start = get_next_business_day(cursor, holiday_dates)
+
+                            # окончание — последний рабочий день выполнения
+                            t_end = add_business_days(t_start, TASK_DURATION_WORKDAYS - 1, holiday_dates)
+
+                            # следующий поиск начинается со дня после окончания
+                            cursor = t_end + datetime.timedelta(days=1)
 
                             task_name = (f"{idx + 1}. {row['DESCRIPTION'][:60]}..."
                                          if len(row['DESCRIPTION']) > 60
@@ -175,29 +195,26 @@ if uploaded_file:
                                 '№': idx + 1,
                                 'Фаза проекта': row['Phase'],
                                 'DESCRIPTION': row['DESCRIPTION'],
-                                'Дата начала (расчет)': t_start.strftime('%d.%m.%Y'),
-                                'Дата окончания (расчет)': t_start.strftime('%d.%m.%Y')
+                                'Дата начала': t_start.strftime('%d.%m.%Y'),
+                                'Дата окончания': t_end.strftime('%d.%m.%Y')
                             })
 
+                            # Для Plotly x_end — эксклюзивная граница, поэтому +1 день
                             gantt_data.append({
                                 'Task': task_name,
-                                'Start': t_start,
-                                'Finish': t_end,
+                                'Start': pd.to_datetime(t_start),
+                                'Finish': pd.to_datetime(t_end) + pd.Timedelta(days=1),
                                 'Phase': row['Phase'],
                                 'Full_Description': row['DESCRIPTION']
                             })
 
-                            current_date = get_next_business_day(t_start + datetime.timedelta(days=1), holiday_dates)
-
                         res_df = pd.DataFrame(schedule)
                         gantt_df = pd.DataFrame(gantt_data)
 
-                        # ---- Сбор вех ----
+                        # ---- Вехи ----
                         milestones = []
                         milestones += extract_milestones_from_start_sheet(xls)
                         milestones += extract_phase3_milestones(xls)
-
-                        # убираем вехи без даты
                         milestones = [m for m in milestones if m['Date'] is not None]
 
                         # ---- Диаграмма Ганта ----
@@ -214,27 +231,24 @@ if uploaded_file:
                         )
                         fig.update_yaxes(autorange="reversed")
 
-                        # ---- Наложение вех как вертикальных линий/маркеров ----
+                        # ---- Отрисовка вех ----
                         if milestones:
-                            # Определяем границы по X, чтобы рисовать вертикальные линии на всю высоту
-                            x_min = gantt_df['Start'].min()
-                            x_max = gantt_df['Finish'].max()
-
-                            for i, m in enumerate(milestones):
+                            # Сдвигаем подписи по вертикали, если даты совпадают
+                            used_dates = {}
+                            for m in milestones:
                                 m_date = pd.to_datetime(m['Date'])
+                                offset = used_dates.get(m_date, 0)
+                                used_dates[m_date] = offset + 1
 
-                                # Вертикальная линия вехи
                                 fig.add_vline(
                                     x=m_date,
                                     line_width=2,
                                     line_dash="dash",
                                     line_color="crimson"
                                 )
-
-                                # Подпись вехи (сверху диаграммы)
                                 fig.add_annotation(
                                     x=m_date,
-                                    y=1.02,
+                                    y=1.02 + offset * 0.06,
                                     yref="paper",
                                     text=f"🚩 {m['Name']}<br>{m_date.strftime('%d.%m.%Y')}",
                                     showarrow=False,
@@ -245,32 +259,17 @@ if uploaded_file:
                                     align="center"
                                 )
 
-                                # Ромб-маркер на самой линии (для наглядности)
-                                fig.add_trace(go.Scatter(
-                                    x=[m_date],
-                                    y=[gantt_df['Task'].iloc[0]],
-                                    mode="markers",
-                                    marker=dict(symbol="diamond", size=14,
-                                                color="crimson",
-                                                line=dict(color="white", width=1)),
-                                    name=f"🚩 {m['Name']}",
-                                    hovertemplate=(f"<b>{m['Name']}</b><br>"
-                                                   f"Дата: {m_date.strftime('%d.%m.%Y')}<br>"
-                                                   f"Источник: {m['Source']}<extra></extra>"),
-                                    showlegend=True
-                                ))
-
                         fig.update_layout(
                             height=max(500, len(gantt_df) * 25),
                             xaxis_title="Дата",
                             yaxis_title="Задачи (DESCRIPTION)",
-                            legend_title="Фаза проекта / Вехи",
-                            margin=dict(t=120)  # место под подписи вех сверху
+                            legend_title="Фаза проекта",
+                            margin=dict(t=140)
                         )
 
                         st.plotly_chart(fig, use_container_width=True)
 
-                        # ---- Таблица вех ----
+                        # ---- Таблица вех (на экране) ----
                         if milestones:
                             st.subheader("🚩 Вехи проекта")
                             ms_df = pd.DataFrame([{
@@ -284,17 +283,51 @@ if uploaded_file:
                         st.subheader("📋 Таблица календарного плана")
                         st.dataframe(res_df, use_container_width=True)
 
-                        # ---- Экспорт в Excel ----
+                        # ---- Excel: один лист, первая строка жирным ----
                         excel_out = "SMS_Schedule_Result.xlsx"
+
+                        # Объединяем задачи и вехи в один датафрейм
+                        combined_rows = []
+                        for _, r in res_df.iterrows():
+                            combined_rows.append({
+                                '№': r['№'],
+                                'Фаза проекта': r['Фаза проекта'],
+                                'DESCRIPTION / Веха': r['DESCRIPTION'],
+                                'Дата начала': r['Дата начала'],
+                                'Дата окончания': r['Дата окончания'],
+                                'Тип': 'Задача'
+                            })
+                        for m in milestones:
+                            combined_rows.append({
+                                '№': '',
+                                'Фаза проекта': 'Веха',
+                                'DESCRIPTION / Веха': f"🚩 {m['Name']}",
+                                'Дата начала': m['Date'].strftime('%d.%m.%Y'),
+                                'Дата окончания': m['Date'].strftime('%d.%m.%Y'),
+                                'Тип': 'Веха'
+                            })
+
+                        export_df = pd.DataFrame(combined_rows)
+
                         with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
-                            res_df.to_excel(writer, index=False, sheet_name='SMS Schedule')
-                            if milestones:
-                                ms_export = pd.DataFrame([{
-                                    'Веха': m['Name'],
-                                    'Дата': m['Date'].strftime('%d.%m.%Y'),
-                                    'Источник': m['Source']
-                                } for m in milestones])
-                                ms_export.to_excel(writer, index=False, sheet_name='Milestones')
+                            export_df.to_excel(writer, index=False, sheet_name='SMS Schedule')
+                            ws = writer.sheets['SMS Schedule']
+
+                            # Первая строка — жирным + выравнивание по центру
+                            for cell in ws[1]:
+                                cell.font = Font(bold=True)
+                                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+                            # Автоширина колонок
+                            for col_idx, column in enumerate(export_df.columns, start=1):
+                                max_len = max(
+                                    [len(str(column))] +
+                                    [len(str(v)) for v in export_df[column].astype(str).tolist()]
+                                )
+                                ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 70)
+
+                            # Закрепить шапку
+                            ws.freeze_panes = "A2"
 
                         with open(excel_out, "rb") as f:
                             st.download_button("📥 Скачать итоговый Excel", f,
