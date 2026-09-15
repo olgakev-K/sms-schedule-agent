@@ -19,14 +19,14 @@ st.set_page_config(
 )
 
 st.title("📅 Генератор SMS-графика проекта запуска (TOGF-ENG)")
-st.caption("Точный расчет параллельных и последовательных задач на основе матрицы недель и производственного календаря РФ")
+st.caption("Точный расчет параллельных задач по номерам недель (W) и производственному календарю РФ")
 
 # -----------------------------------------------------------------------------
 # 2. КАЛЕНДАРЬ РФ И РАБОЧИЕ ДНИ
 # -----------------------------------------------------------------------------
 @st.cache_data
 def get_ru_holidays_set(year_start: int, year_end: int):
-    """Множество государственные праздников РФ."""
+    """Множество государственных праздников РФ."""
     ru_holidays = set()
     for yr in range(year_start, year_end + 1):
         for d in holidays.RU(years=yr).keys():
@@ -51,7 +51,7 @@ def check_week_has_holidays(week_start: datetime.date, week_end: datetime.date, 
 def process_excel_schedule(file_bytes, project_start_date: datetime.date):
     wb = openpyxl.load_workbook(filename=io.BytesIO(file_bytes), data_only=True)
     
-    # 1. Вехи проекта (Условие 1)
+    # 1. Вехи проекта (START PROJECT TOGF-ENG-007-02)
     milestones = []
     milestone_sheet = "START PROJECT TOGF-ENG-007-02"
     if milestone_sheet in wb.sheetnames:
@@ -61,7 +61,7 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
             if vals:
                 milestones.append(" | ".join(vals[:3]))
     
-    # 2. Строгие вкладки фаз (Условие 2)
+    # 2. Целевые вкладки
     target_sheets = [
         ("PMSPR TOGF-ENG-008-06 Phase2", "Phase 2"),
         ("PMSPR TOGF-ENG-008-06 Phase 3", "Phase 3"),
@@ -69,9 +69,7 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
     ]
     
     tasks = []
-    start_matrix_col = 39 # Колонка AM (39)
-    
-    ru_holidays = get_ru_holidays_set(project_start_date.year, project_start_date.year + 4)
+    ru_holidays = get_ru_holidays_set(project_start_date.year, project_start_date.year + 5)
     
     for sheet_name, phase_label in target_sheets:
         if sheet_name not in wb.sheetnames:
@@ -79,36 +77,69 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
             
         ws = wb[sheet_name]
         desc_col_idx = None
-        header_row = None
+        header_row_idx = None
         
-        # Поиск строки заголовков и колонки DESCRIPTION (Условие 3: Игнорируем авто-даты)
-        for r in range(1, min(25, ws.max_row + 1)):
-            for c in range(1, ws.max_column + 1):
+        # Шаг А: Поиск строки с описанием задач (DESCRIPTION)
+        for r in range(1, min(30, ws.max_row + 1)):
+            for c in range(1, min(20, ws.max_column + 1)):
                 val = str(ws.cell(row=r, column=c).value or "").strip().upper()
                 if "DESCRIPTION" in val or "ОПИСАНИЕ" in val or "ДЕЙСТВИЕ" in val:
                     desc_col_idx = c
-                    header_row = r
+                    header_row_idx = r
                     break
             if desc_col_idx:
                 break
                 
         if not desc_col_idx:
             desc_col_idx = 1
-            header_row = 1
+            header_row_idx = 1
+
+        # Шаг Б: Поиск шапки матрицы недель (W1, W2, W3... или 1, 2, 3...)
+        # Карта: col_index -> week_number
+        week_col_map = {}
+        for r in range(max(1, header_row_idx - 3), min(header_row_idx + 3, ws.max_row + 1)):
+            for c in range(desc_col_idx + 1, ws.max_column + 1):
+                val = str(ws.cell(row=r, column=c).value or "").strip().upper()
+                # Распознаем формат 'W1', 'W01', 'WEEK 1' или просто числовые значения недель
+                if val.startswith("W") and val[1:].isdigit():
+                    week_col_map[c] = int(val[1:])
+                elif val.isdigit() and int(val) < 200:
+                    week_col_map[c] = int(val)
+            if len(week_col_map) >= 3:
+                break
+
+        # Если не нашли явные 'W1', ищем любые закрашенные колонки матрицы
+        if not week_col_map:
+            # Находим первую активную матричную колонку
+            start_matrix_col = None
+            for c in range(desc_col_idx + 5, ws.max_column + 1):
+                for r_check in range(header_row_idx + 1, min(header_row_idx + 50, ws.max_row + 1)):
+                    cell = ws.cell(row=r_check, column=c)
+                    if cell.value or (cell.fill and cell.fill.fill_type and cell.fill.fill_type != 'none'):
+                        start_matrix_col = c
+                        break
+                if start_matrix_col:
+                    break
             
-        # Поиск задач и их точных колонок в матрице W1, W2, ...
-        for r in range(header_row + 1, ws.max_row + 1):
+            if start_matrix_col:
+                for c in range(start_matrix_col, ws.max_column + 1):
+                    week_col_map[c] = (c - start_matrix_col) + 1
+
+        if not week_col_map:
+            continue
+
+        # Шаг В: Считывание задач и закрашенных недель
+        for r in range(header_row_idx + 1, ws.max_row + 1):
             desc_val = ws.cell(row=r, column=desc_col_idx).value
             if not desc_val or str(desc_val).strip() == "":
                 continue
                 
             task_desc = str(desc_val).strip()
             
-            first_active_col = None
-            last_active_col = None
+            min_w = None
+            max_w = None
             
-            # Сканируем матрицу колонок (начиная с AM)
-            for c in range(start_matrix_col, ws.max_column + 1):
+            for c, w_num in week_col_map.items():
                 cell = ws.cell(row=r, column=c)
                 fill = cell.fill
                 
@@ -121,29 +152,28 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
                 has_val = cell.value is not None and str(cell.value).strip() != ""
                 
                 if has_fill or has_val:
-                    if first_active_col is None:
-                        first_active_col = c
-                    last_active_col = c
+                    if min_w is None or w_num < min_w:
+                        min_w = w_num
+                    if max_w is None or w_num > max_w:
+                        max_w = w_num
             
-            # Если задача записана, но в матрице не закрашена, даем ей дефолтно 1-ю неделю
-            if first_active_col is None:
-                first_active_col = start_matrix_col
-                last_active_col = start_matrix_col
+            # Если нет отметок в матрице, по умолчанию ставим неделе W1
+            if min_w is None:
+                min_w = 1
+                max_w = 1
                 
-            # Смещение недели от старта (0 = первая неделя W1)
-            start_week_offset = first_active_col - start_matrix_col
-            end_week_offset = last_active_col - start_matrix_col
-            duration_weeks = (end_week_offset - start_week_offset) + 1
+            duration_weeks = (max_w - min_w) + 1
             
-            # РАСЧЕТ ДАТ: Каждая неделя = 7 дней от старта проекта
-            task_start_date = project_start_date + timedelta(days=start_week_offset * 7)
-            task_end_date = project_start_date + timedelta(days=(end_week_offset + 1) * 7 - 1)
+            # Расчет точных дат:
+            # Неделя 1 (W1) начинается точно в project_start_date
+            task_start_date = project_start_date + timedelta(days=(min_w - 1) * 7)
+            task_end_date = project_start_date + timedelta(days=max_w * 7 - 1)
             
             tasks.append({
                 "phase": phase_label,
                 "description": task_desc,
-                "start_week_num": start_week_offset + 1,
-                "end_week_num": end_week_offset + 1,
+                "start_week_num": min_w,
+                "end_week_num": max_w,
                 "duration_weeks": duration_weeks,
                 "start_date": task_start_date,
                 "end_date": task_end_date
@@ -159,18 +189,19 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
 
     df_tasks = pd.DataFrame(processed_tasks)
     
-    # Сетка недель для визуализации и Excel
-    max_week_num = df_tasks["end_week_num"].max()
-    weeks_info = []
+    # Сетка всех недель от W1 до максимальной недели проекта
+    min_project_w = df_tasks["start_week_num"].min()
+    max_project_w = df_tasks["end_week_num"].max()
     
-    for w_idx in range(max_week_num):
-        w_start = project_start_date + timedelta(days=w_idx * 7)
+    weeks_info = []
+    for w_num in range(min_project_w, max_project_w + 1):
+        w_start = project_start_date + timedelta(days=(w_num - 1) * 7)
         w_end = w_start + timedelta(days=6)
         has_holiday = check_week_has_holidays(w_start, w_end, ru_holidays)
         
         weeks_info.append({
-            "week_num": w_idx + 1,
-            "week_label": f"W{w_idx + 1}",
+            "week_num": w_num,
+            "week_label": f"W{w_num}",
             "start_date": w_start,
             "end_date": w_end,
             "has_holiday": has_holiday
@@ -220,7 +251,6 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = thin_border
         
-        # Ширина столбца недели = 4
         ws.column_dimensions[get_column_letter(col_idx)].width = 4
 
     for row_idx, task in df_tasks.iterrows():
@@ -242,13 +272,13 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center" if c_idx in [1, 4, 5, 6, 7, 8] else "left", vertical="center")
 
-        # Рисование баров Ганта по сетке недель W_start ... W_end
+        # Отрисовка баров Ганта
         for w_idx, w in enumerate(weeks_info):
             c_idx = start_week_col + w_idx
             cell = ws.cell(row=r, column=c_idx)
             cell.border = thin_border
             
-            current_w_num = w_idx + 1
+            current_w_num = w["week_num"]
             if task['start_week_num'] <= current_w_num <= task['end_week_num']:
                 cell.fill = fill_gantt_bar
                 cell.value = "█"
@@ -274,7 +304,7 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
     return output
 
 # -----------------------------------------------------------------------------
-# 5. ИНТЕРФЕЙС И КНОПКА СКАЧИВАНИЯ
+# 5. ИНТЕРФЕЙС STREAMLIT
 # -----------------------------------------------------------------------------
 st.sidebar.header("⚙️ Входные параметры")
 
@@ -284,7 +314,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 start_date_input = st.sidebar.date_input(
-    "Дата начала проекта",
+    "Дата начала проекта (Неделя W1)",
     value=datetime.date.today(),
     format="DD.MM.YYYY"
 )
@@ -292,11 +322,10 @@ start_date_input = st.sidebar.date_input(
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
     
-    with st.spinner("Агент рассчитывает даты параллельных и последовательных задач..."):
+    with st.spinner("Агент сканирует заголовки недель и рассчитывает даты..."):
         df_tasks, weeks_info, milestones = process_excel_schedule(file_bytes, start_date_input)
     
     if df_tasks is not None and not df_tasks.empty:
-        # Метрики
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Всего задач", len(df_tasks))
         c2.metric("Общий горизонт (нед)", len(weeks_info))
@@ -305,7 +334,6 @@ if uploaded_file is not None:
 
         st.markdown("---")
 
-        # График Plotly
         st.subheader("📊 Интерактивный SMS-график (Гант)")
         fig = px.timeline(
             df_tasks,
@@ -314,20 +342,18 @@ if uploaded_file is not None:
             y="description",
             color="phase",
             hover_data=["duration_weeks", "start_week_num", "end_week_num"],
-            labels={"description": "Описание действия", "phase": "Фаза", "start_week_num": "Старт неделя", "end_week_num": "Финиш неделя"}
+            labels={"description": "Описание действия", "phase": "Фаза", "start_week_num": "Старт W", "end_week_num": "Финиш W"}
         )
         fig.update_yaxes(autorange="reversed")
         fig.update_layout(height=min(800, 150 + len(df_tasks) * 25))
         st.plotly_chart(fig, use_container_width=True)
 
-        # Таблица
         with st.expander("📋 Детализация календарного плана (Таблица)"):
             st.dataframe(
                 df_tasks[["id", "phase", "description", "start_week_num", "end_week_num", "duration_weeks", "start_date", "end_date"]],
                 use_container_width=True
             )
 
-        # Скачивание Excel
         st.markdown("---")
         st.subheader("📥 Скачать SMS-график")
         
@@ -342,6 +368,6 @@ if uploaded_file is not None:
             use_container_width=True
         )
     else:
-        st.error("Не удалось прочитать задачи. Убедитесь в наличии вкладок 'PMSPR TOGF-ENG-008-06 Phase2', 'Phase 3' или 'Phase4;5'.")
+        st.error("Не удалось прочитать задачи или шапку недель в файле.")
 else:
     st.info("👈 Загрузите исходный Excel-файл на панели слева.")
