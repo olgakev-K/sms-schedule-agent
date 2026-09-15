@@ -6,7 +6,6 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 import holidays
 
@@ -52,29 +51,37 @@ def check_week_has_holidays(week_start: datetime.date, week_end: datetime.date, 
 def process_excel_schedule(file_bytes, project_start_date: datetime.date):
     wb = openpyxl.load_workbook(filename=io.BytesIO(file_bytes), data_only=True)
     
-    # 1. Считывание ВЕХ (Уточненная структура: B30:C35)
+    # Нормализация даты начала проекта к datetime.date
+    if isinstance(project_start_date, datetime.datetime):
+        project_start_date = project_start_date.date()
+    
+    # 1. Считывание ВЕХ (Строки B30:C35)
     milestones = []
     milestone_sheet = "START PROJECT TOGF-ENG-007-02"
     if milestone_sheet in wb.sheetnames:
         ws_m = wb[milestone_sheet]
         for r in range(30, 36):
-            m_name = ws_m.cell(row=r, column=2).value # Колонка B
-            m_date_val = ws_m.cell(row=r, column=3).value # Колонка C
+            m_name = ws_m.cell(row=r, column=2).value  # Колонка B
+            m_date_val = ws_m.cell(row=r, column=3).value  # Колонка C
             
             if m_name and str(m_name).strip():
                 m_label = str(m_name).strip()
                 m_date = None
                 
-                # Форматирование даты вехи
-                if isinstance(m_date_val, (datetime.datetime, datetime.date)):
-                    m_date = m_date_val if isinstance(m_date_val, datetime.date) else m_date_val.date()
+                # Приведение даты вехи строго к datetime.date
+                if isinstance(m_date_val, datetime.datetime):
+                    m_date = m_date_val.date()
+                elif isinstance(m_date_val, datetime.date):
+                    m_date = m_date_val
                 elif m_date_val:
                     try:
-                        m_date = pd.to_datetime(m_date_val).date()
+                        parsed_dt = pd.to_datetime(m_date_val)
+                        if pd.notnull(parsed_dt):
+                            m_date = parsed_dt.date()
                     except Exception:
                         m_date = None
                 
-                # Расчет недели вехи относительно старта
+                # Безопасный расчет номера недели
                 m_week = None
                 if m_date:
                     m_week = max(1, ((m_date - project_start_date).days // 7) + 1)
@@ -103,7 +110,7 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
         desc_col_idx = None
         header_row_idx = None
         
-        # Шаг А: Поиск строки с DESCRIPTION
+        # Поиск строки с DESCRIPTION
         for r in range(1, min(30, ws.max_row + 1)):
             for c in range(1, min(20, ws.max_column + 1)):
                 val = str(ws.cell(row=r, column=c).value or "").strip().upper()
@@ -118,7 +125,7 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
             desc_col_idx = 1
             header_row_idx = 1
 
-        # Шаг Б: Поиск шапки недель (W1, W2...)
+        # Поиск шапки недель (W1, W2...)
         week_col_map = {}
         for r in range(max(1, header_row_idx - 3), min(header_row_idx + 3, ws.max_row + 1)):
             for c in range(desc_col_idx + 1, ws.max_column + 1):
@@ -131,7 +138,6 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
                 break
 
         if not week_col_map:
-            # Резервный поиск активных матричных колонок
             start_matrix_col = None
             for c in range(desc_col_idx + 5, ws.max_column + 1):
                 for r_check in range(header_row_idx + 1, min(header_row_idx + 50, ws.max_row + 1)):
@@ -149,7 +155,7 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
         if not week_col_map:
             continue
 
-        # Шаг В: Считывание задач
+        # Считывание задач
         for r in range(header_row_idx + 1, ws.max_row + 1):
             desc_val = ws.cell(row=r, column=desc_col_idx).value
             if not desc_val or str(desc_val).strip() == "":
@@ -207,9 +213,8 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
     min_project_w = df_tasks["start_week_num"].min()
     max_project_w = df_tasks["end_week_num"].max()
     
-    # Расширяем сетку недель, если веха выходит за границы задач
     for m in milestones:
-        if m["week_num"] and m["week_num"] > max_project_w:
+        if m["week_num"] is not None and m["week_num"] > max_project_w:
             max_project_w = m["week_num"]
 
     weeks_info = []
@@ -218,7 +223,6 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
         w_end = w_start + timedelta(days=6)
         has_holiday = check_week_has_holidays(w_start, w_end, ru_holidays)
         
-        # Находим вехи для этой недели
         week_milestones = [m["name"] for m in milestones if m["week_num"] == w_num]
         
         weeks_info.append({
@@ -233,7 +237,7 @@ def process_excel_schedule(file_bytes, project_start_date: datetime.date):
     return df_tasks, weeks_info, milestones
 
 # -----------------------------------------------------------------------------
-# 4. ФОРМИРОВАНИЕ ИТОГОВОГО EXCEL С ОТОБРАЖЕНИЕМ ВЕХ
+# 4. ФОРМИРОВАНИЕ ИТОГОВОГО EXCEL C ВЕХАМИ
 # -----------------------------------------------------------------------------
 def generate_excel_report(df_tasks, weeks_info, milestones):
     wb = openpyxl.Workbook()
@@ -260,7 +264,6 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
 
     headers = ["№", "Фаза (Phase)", "Описание действия (Description)", "Длит. (нед)", "Старт W", "Финиш W", "Дата начала", "Дата окончания"]
     
-    # Строка 1: Буквенные обозначения Вех (как в BK9)
     # Строка 2: Основная шапка таблицы
     for col_idx, h in enumerate(headers, 1):
         cell = ws.cell(row=2, column=col_idx, value=h)
@@ -273,14 +276,14 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
     for i, w in enumerate(weeks_info):
         col_idx = start_week_col + i
         
-        # Отображение вехи над неделей (Строка 1)
+        # Строка 1: Отображение вехи над неделей
         if w["milestones"]:
             ms_text = "\n".join(w["milestones"])
             ms_cell = ws.cell(row=1, column=col_idx, value=ms_text)
             ms_cell.font = font_ms
             ms_cell.alignment = Alignment(horizontal="center", vertical="bottom", wrap_text=True)
         
-        # Шапка недели (Строка 2)
+        # Шапка недели
         label = f"{w['week_label']} 🎉" if w["has_holiday"] else w["week_label"]
         cell = ws.cell(row=2, column=col_idx, value=label)
         cell.font = Font(name="Arial", size=9, bold=True, color="9C0006" if w["has_holiday"] else "FFFFFF")
@@ -290,9 +293,9 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
         
         ws.column_dimensions[get_column_letter(col_idx)].width = 4.5
 
-    # Заполнение строк задач
+    # Заполнение задач
     for row_idx, task in df_tasks.iterrows():
-        r = row_idx + 3 # Сдвиг из-за строки вех
+        r = row_idx + 3
         vals = [
             task["id"],
             task["phase"],
@@ -310,7 +313,7 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center" if c_idx in [1, 4, 5, 6, 7, 8] else "left", vertical="center")
 
-        # Отрисовка Ганта и вертикальных вех
+        # Отрисовка баров Ганта и символов вех
         for w_idx, w in enumerate(weeks_info):
             c_idx = start_week_col + w_idx
             cell = ws.cell(row=r, column=c_idx)
@@ -318,18 +321,15 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
             
             current_w_num = w["week_num"]
             
-            # Фоновая подсветка столбца с вехой (как BK10)
             if w["milestones"]:
                 cell.fill = fill_milestone_col
             
-            # Закраска баров задач
             if task['start_week_num'] <= current_w_num <= task['end_week_num']:
                 cell.fill = fill_gantt_bar
                 cell.value = "█"
                 cell.font = Font(name="Arial", size=9, color="2F5597")
                 cell.alignment = Alignment(horizontal="center", vertical="center")
             elif w["milestones"]:
-                # Буквенный маркер вехи внутри ячейки матрицы
                 cell.value = "◊"
                 cell.font = font_ms
                 cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -340,7 +340,6 @@ def generate_excel_report(df_tasks, weeks_info, milestones):
 
     ws.freeze_panes = "I3"
 
-    # Отдельная вкладка со списком вех
     if milestones:
         ws_m = wb.create_sheet(title="Milestones")
         ws_m.views.sheetView[0].showGridLines = True
@@ -389,7 +388,6 @@ if uploaded_file is not None:
 
         st.markdown("---")
 
-        # График Plotly с вертикальными линиями вех
         st.subheader("📊 Интерактивный SMS-график с вехами")
         fig = px.timeline(
             df_tasks,
@@ -401,7 +399,7 @@ if uploaded_file is not None:
             labels={"description": "Описание действия", "phase": "Фаза", "start_week_num": "Старт W", "end_week_num": "Финиш W"}
         )
         
-        # Нанесение вертикальных вех на график
+        # Красные пунктирные линии для вех
         for m in milestones:
             if m["date"]:
                 fig.add_vline(
