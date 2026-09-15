@@ -1,4 +1,3 @@
-# pip install openpyxl
 import openpyxl, datetime
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
