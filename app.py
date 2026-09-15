@@ -1,406 +1,401 @@
-import streamlit as st
-import pandas as pd
-import datetime
-import requests
-from bs4 import BeautifulSoup
-import holidays
-import plotly.express as px
-import plotly.graph_objects as go
-from openpyxl.styles import Font, Alignment
+# -*- coding: utf-8 -*-
+"""
+SMS график проекта запуска в серийное производство P25077
+Источник: PLANT_MASTER_SCHEDULE P25077.xlsx
+"""
+
+import openpyxl
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.chart import BarChart, Reference
+import pandas as pd
+from datetime import datetime, timedelta
+import numpy as np
 
-st.set_page_config(page_title="SMS Schedule Agent", layout="wide")
+# ============================================================
+# КОНФИГУРАЦИЯ
+# ============================================================
+SOURCE_FILE = "PLANT_MASTER_SCHEDULE P25077.xlsx"
+OUTPUT_FILE = "SMS_P25077_Result.xlsx"
 
-st.title("🤖 ИИ-Агент: Генератор SMS-графика проекта")
-st.write("Автоматический расчет календарного плана с визуализацией в виде Диаграммы Ганта")
+SHEET_MILESTONES = "START PROJECT TOGF-ENG-007-02"
+SHEET_PHASES = [
+    "PMSPR TOGF-ENG-008-06 Phase2",
+    "PMSPR TOGF-ENG-008-06 Phase 3",
+    "PMSPR TOGF-ENG-008-06 Phase4;5",
+]
+
+# Колонки для подсчёта Duration weeks (по заливке)
+DURATION_COLUMNS = ["AM", "AN", "AQ", "AP"]
+
+# Колонка с описанием действия
+DESCRIPTION_COLUMN = "DESCRIPTION"
+
+# Диапазон строк с вехами
+MILESTONE_ROWS = range(30, 36)   # 30..35
+MILESTONE_NAME_COL = "B"
+MILESTONE_DATE_COL = "C"
+
+# Игнорируемые колонки
+IGNORED_COLUMNS = {
+    "PLANNED START DATE",
+    "PLANNED START WEEK (automatic)",
+    "PLANNED END DATE (automatic)",
+    "PLANNED END WEEK (automatic)",
+    "ACTUAL END DATE STATUS (automatic)",
+}
+
+# Производственный календарь РФ (пример для 2024–2026)
+# Загрузи актуальный список с consultant.ru и обнови здесь
+RU_HOLIDAYS = {
+    2024: [
+        "2024-01-01","2024-01-02","2024-01-03","2024-01-04","2024-01-05",
+        "2024-01-06","2024-01-07","2024-01-08","2024-02-23","2024-03-08",
+        "2024-04-29","2024-04-30","2024-05-01","2024-05-09","2024-05-10",
+        "2024-06-12","2024-11-04","2024-12-30","2024-12-31",
+    ],
+    2025: [
+        "2025-01-01","2025-01-02","2025-01-03","2025-01-06","2025-01-07",
+        "2025-01-08","2025-02-24","2025-03-10","2025-05-01","2025-05-02",
+        "2025-05-08","2025-05-09","2025-06-12","2025-06-13","2025-11-03",
+        "2025-11-04","2025-12-31",
+    ],
+    2026: [
+        "2026-01-01","2026-01-02","2026-01-05","2026-01-06","2026-01-07",
+        "2026-01-08","2026-02-23","2026-03-09","2026-05-01","2026-05-11",
+        "2026-06-12","2026-11-04",
+    ],
+}
 
 
 # ============================================================
-# ПРАЗДНИКИ РФ
+# РАБОТА С ПРОИЗВОДСТВЕННЫМ КАЛЕНДАРЁМ
 # ============================================================
-@st.cache_data
-def get_rf_holidays():
-    url = "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    holiday_dates = set()
-
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            # (парсинг сайта оставлен «на будущее», основной источник — библиотека holidays)
-            for td in soup.find_all('td', class_=['holiday', 'work_short']):
-                pass
-    except Exception:
-        pass
-
-    current_year = datetime.datetime.now().year
-    ru_holidays = holidays.RU(years=[current_year - 2, current_year - 1, current_year,
-                                     current_year + 1, current_year + 2, current_year + 3])
-    for d in ru_holidays.keys():
-        holiday_dates.add(d)
-
-    return holiday_dates
+def build_holiday_set(years):
+    """Собирает множество дат-праздников для указанных лет."""
+    holidays = set()
+    for y in years:
+        for d in RU_HOLIDAYS.get(y, []):
+            holidays.add(datetime.strptime(d, "%Y-%m-%d").date())
+    return holidays
 
 
-def is_business_day(date_val, holiday_dates):
-    if date_val.weekday() >= 5 or date_val in holiday_dates:
+def is_working_day(d, holidays):
+    """Проверяет, является ли дата рабочим днём."""
+    if d.weekday() >= 5:          # сб, вс
+        return False
+    if d in holidays:
         return False
     return True
 
 
-def get_next_business_day(date_val, holiday_dates):
-    cur = date_val
-    while not is_business_day(cur, holiday_dates):
-        cur += datetime.timedelta(days=1)
-    return cur
-
-
-def add_business_days(start_date, n_days, holiday_dates):
-    """Дата, отстоящая от start_date на n рабочих дней (n_days >= 0).
-    n_days = 0 -> первый рабочий день, начиная со start_date."""
-    cur = start_date
+def add_working_days(start_date, working_days, holidays):
+    """Прибавляет N рабочих дней к дате."""
+    current = start_date
     added = 0
-    while True:
-        cur = get_next_business_day(cur, holiday_dates)
-        if added == n_days:
-            return cur
-        cur += datetime.timedelta(days=1)
-        added += 1
+    while added < working_days:
+        current += timedelta(days=1)
+        if is_working_day(current, holidays):
+            added += 1
+    return current
+
+
+def weeks_to_working_days(weeks):
+    """1 неделя = 5 рабочих дней."""
+    return weeks * 5
 
 
 # ============================================================
-# ИЗВЛЕЧЕНИЕ ДАТЫ СТАРТА
+# ЧТЕНИЕ ФАЙЛА
 # ============================================================
-def extract_start_milestone(xls):
-    sheet_name = "START PROJECT TOGF-ENG-007-02"
-    if sheet_name in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-        for r in range(df.shape[0]):
-            for c in range(df.shape[1]):
-                cell_val = df.iloc[r, c]
-                if pd.notna(cell_val) and str(cell_val).strip().upper() not in ['N/A', 'NONE', 'CLOSED']:
-                    dt = pd.to_datetime(cell_val, errors='coerce')
-                    if pd.notna(dt) and dt.year > 2000:
-                        return dt.date()
-    return None
-
-
-# ============================================================
-# ВЕХИ ИЗ START-ЛИСТА
-#   Колонка B (индекс 1) — названия, строки 30–35
-#   Колонка C (индекс 2) — даты,     строки 30–35
-#   Названия в буквенном отображении (SOP, Launch, Gate Review ...)
-# ============================================================
-def extract_milestones_from_start_sheet(xls):
-    sheet_name = "START PROJECT TOGF-ENG-007-02"
+def read_milestones(wb):
+    """Читает вехи из вкладки START PROJECT."""
+    ws = wb[SHEET_MILESTONES]
     milestones = []
-    if sheet_name in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-
-        # строки 30..35 в 1-индексации => индексы 29..34
-        for r in range(29, 35):
-            if r >= df.shape[0]:
-                break
-
-            name_val = df.iloc[r, 1] if df.shape[1] > 1 else None  # колонка B
-            date_val = df.iloc[r, 2] if df.shape[1] > 2 else None  # колонка C
-
-            if pd.notna(name_val) and str(name_val).strip():
-                dt = pd.to_datetime(date_val, errors='coerce')
-                milestones.append({
-                    'Name': str(name_val).strip(),
-                    'Date': dt.date() if pd.notna(dt) else None,
-                    'Source': sheet_name
-                })
+    for row in MILESTONE_ROWS:
+        name = ws[f"{MILESTONE_NAME_COL}{row}"].value
+        date_val = ws[f"{MILESTONE_DATE_COL}{row}"].value
+        if name:
+            milestones.append({
+                "name": str(name).strip(),
+                "date": date_val,
+                "row": row,
+            })
     return milestones
 
 
+def count_filled_cells(ws, row, columns):
+    """Считает количество залитых цветом ячеек в указанных столбцах."""
+    filled = 0
+    for col_letter in columns:
+        cell = ws[f"{col_letter}{row}"]
+        fill = cell.fill
+        # Любая заливка, кроме "нет заливки"
+        if fill is not None and fill.fill_type not in (None, "none"):
+            # Проверяем, что цвет не белый и не прозрачный
+            fg = fill.fgColor
+            if fg is not None and fg.rgb not in (None, "00000000", "FFFFFFFF"):
+                filled += 1
+    return filled
+
+
+def find_description_column(ws):
+    """Ищет колонку DESCRIPTION в шапке (первые 20 строк)."""
+    for row in range(1, 21):
+        for col in range(1, 40):
+            val = ws.cell(row=row, column=col).value
+            if val and str(val).strip().upper() == DESCRIPTION_COLUMN.upper():
+                return row, col
+    return None, None
+
+
+def read_phase_tasks(wb, sheet_name):
+    """Читает задачи из вкладки фазы."""
+    ws = wb[sheet_name]
+    header_row, desc_col = find_description_column(ws)
+    if header_row is None:
+        print(f"⚠ Колонка DESCRIPTION не найдена на вкладке {sheet_name}")
+        return []
+
+    tasks = []
+    for row in range(header_row + 1, ws.max_row + 1):
+        desc = ws.cell(row=row, column=desc_col).value
+        if not desc or not str(desc).strip():
+            continue
+
+        duration = count_filled_cells(ws, row, DURATION_COLUMNS)
+        if duration == 0:
+            continue  # пропускаем строки без заливки
+
+        tasks.append({
+            "phase": sheet_name,
+            "description": str(desc).strip(),
+            "duration_weeks": duration,
+            "source_row": row,
+        })
+    return tasks
+
+
 # ============================================================
-# ВЕХИ ИЗ PHASE 3 (эталон отображения)
-#   Колонка BK (индекс 63): строка 9 — название, строка 10 — дата
+# ПОСТРОЕНИЕ ГРАФИКА
 # ============================================================
-def extract_phase3_milestones(xls):
-    sheet_name = "PMSPR TOGF-ENG-008-06 Phase 3"
-    milestones = []
-    if sheet_name in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-        col_idx = 63  # BK
+def build_schedule(tasks, milestones, holidays, start_date):
+    """Строит календарный план с учётом рабочих дней."""
+    # Определяем год(ы) для календаря
+    years = set()
+    for m in milestones:
+        if isinstance(m["date"], datetime):
+            years.add(m["date"].year)
+        elif isinstance(m["date"], str):
+            try:
+                years.add(datetime.strptime(m["date"], "%Y-%m-%d").year)
+            except ValueError:
+                pass
+    if not years:
+        years = {start_date.year, start_date.year + 1}
+    holidays = holidays | build_holiday_set(years)
 
-        if df.shape[1] > col_idx:
-            name_val = df.iloc[8, col_idx] if df.shape[0] > 8 else None   # строка 9
-            date_val = df.iloc[9, col_idx] if df.shape[0] > 9 else None   # строка 10
-
-            if pd.notna(name_val) and str(name_val).strip():
-                dt = pd.to_datetime(date_val, errors='coerce')
-                milestones.append({
-                    'Name': str(name_val).strip(),
-                    'Date': dt.date() if pd.notna(dt) else None,
-                    'Source': sheet_name
-                })
-    return milestones
+    current = start_date
+    for t in tasks:
+        wd = weeks_to_working_days(t["duration_weeks"])
+        t_start = current
+        # если старт — выходной, сдвигаем на следующий рабочий
+        while not is_working_day(t_start, holidays):
+            t_start += timedelta(days=1)
+        t_end = add_working_days(t_start, wd - 1, holidays) if wd > 0 else t_start
+        t["start"] = t_start
+        t["end"] = t_end
+        t["duration_days"] = wd
+        current = t_end + timedelta(days=1)  # следующая задача стартует после
+    return tasks
 
 
 # ============================================================
-# ЗАГРУЗКА ФАЙЛА
+# ЭКСПОРТ В EXCEL С ДИАГРАММОЙ ГАНТА
 # ============================================================
-uploaded_file = st.file_uploader("Загрузите файл (PLANT_MASTER_SCHEDULE P25077.xlsx)", type=["xlsx"])
+def export_to_excel(tasks, milestones, output_file):
+    """Экспорт: слева таблица, справа диаграмма Ганта на одном листе."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SMS P25077"
 
-target_phases = [
-    "PMSPR TOGF-ENG-008-06 Phase2",
-    "PMSPR TOGF-ENG-008-06 Phase 3",
-    "PMSPR TOGF-ENG-008-06 Phase4;5"
-]
+    # --- Стили ---
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    milestone_fill = PatternFill("solid", fgColor="C00000")
+    milestone_font = Font(bold=True, color="FFFFFF")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    thin = Side(border_style="thin", color="808080")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-# Длительность одной задачи в рабочих днях
-TASK_DURATION_WORKDAYS = 1
+    # --- Заголовок ---
+    ws["A1"] = "SMS график запуска в серийное производство P25077"
+    ws["A1"].font = Font(bold=True, size=14, color="1F4E78")
+    ws.merge_cells("A1:H1")
 
+    # --- Шапка таблицы ---
+    headers = ["№", "Фаза", "Описание действия", "Начало",
+               "Окончание", "Длительность (нед.)", "Длительность (раб. дн.)"]
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(row=3, column=i, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = center
+        c.border = border
 
-if uploaded_file:
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-        start_date = extract_start_milestone(xls)
+    # --- Данные ---
+    row_idx = 4
+    for i, t in enumerate(tasks, start=1):
+        ws.cell(row=row_idx, column=1, value=i).alignment = center
+        ws.cell(row=row_idx, column=2, value=t["phase"]).alignment = left
+        ws.cell(row=row_idx, column=3, value=t["description"]).alignment = left
+        ws.cell(row=row_idx, column=4, value=t["start"].strftime("%d.%m.%Y")).alignment = center
+        ws.cell(row=row_idx, column=5, value=t["end"].strftime("%d.%m.%Y")).alignment = center
+        ws.cell(row=row_idx, column=6, value=t["duration_weeks"]).alignment = center
+        ws.cell(row=row_idx, column=7, value=t["duration_days"]).alignment = center
+        for col in range(1, 8):
+            ws.cell(row=row_idx, column=col).border = border
+        row_idx += 1
 
-        if start_date:
-            st.success(
-                f"📅 Дата вехи извлечена из листа 'START PROJECT TOGF-ENG-007-02': "
-                f"**{start_date.strftime('%d.%m.%Y')}**"
-            )
+    # --- Ширина колонок ---
+    ws.column_dimensions["A"].width = 5
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 55
+    ws.column_dimensions["D"].width = 13
+    ws.column_dimensions["E"].width = 13
+    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["G"].width = 14
 
-            if st.button("🚀 Сформировать автоматический SMS-график"):
-                with st.spinner("Формирование графика и построение диаграммы Ганта..."):
+    # --- Диаграмма Ганта (ручная отрисовка) ---
+    # Стартовая колонка диаграммы — I
+    gantt_start_col = 9
+    gantt_start_row = 3
 
-                    # ------------------------------------------------
-                    # Извлечение DESCRIPTION
-                    # ------------------------------------------------
-                    tasks = []
-                    for sheet in target_phases:
-                        if sheet in xls.sheet_names:
-                            df = pd.read_excel(xls, sheet_name=sheet, header=None)
-                            desc_col = None
+    # Определяем диапазон дат
+    if tasks:
+        min_date = min(t["start"] for t in tasks)
+        max_date = max(t["end"] for t in tasks)
+    else:
+        min_date = max_date = datetime.today().date()
 
-                            for r in range(min(25, df.shape[0])):
-                                for c in range(df.shape[1]):
-                                    if str(df.iloc[r, c]).strip().upper() == 'DESCRIPTION':
-                                        desc_col = c
-                                        break
-                                if desc_col is not None:
-                                    break
+    # Шаг — одна колонка = 1 рабочий день (упрощённо календарный)
+    total_days = (max_date - min_date).days + 1
+    # Ограничим ширину диаграммы
+    if total_days > 200:
+        step = (max_date - min_date).days // 200 + 1
+    else:
+        step = 1
 
-                            if desc_col is not None:
-                                for val in df.iloc[10:, desc_col].dropna():
-                                    val_str = str(val).strip()
-                                    if val_str and val_str.upper() != 'DESCRIPTION':
-                                        tasks.append({'Phase': sheet, 'DESCRIPTION': val_str})
+    # Заголовок диаграммы
+    ws.cell(row=gantt_start_row - 1, column=gantt_start_col,
+            value="Диаграмма Ганта").font = Font(bold=True, size=12)
 
-                    if tasks:
-                        df_tasks = pd.DataFrame(tasks)
-                        holiday_dates = get_rf_holidays()
+    # Отрисовка задач
+    for i, t in enumerate(tasks, start=1):
+        r = gantt_start_row + i
+        ws.cell(row=r, column=gantt_start_col - 1, value=i).alignment = center
 
-                        schedule = []
-                        gantt_data = []
+        # Определяем колонки начала и конца
+        start_offset = (t["start"] - min_date).days // step
+        end_offset = (t["end"] - min_date).days // step
 
-                        # ------------------------------------------------
-                        # Корректный расчёт дат начала/окончания
-                        # ------------------------------------------------
-                        cursor = start_date
+        for offset in range(start_offset, end_offset + 1):
+            col = gantt_start_col + offset
+            cell = ws.cell(row=r, column=col)
+            cell.fill = PatternFill("solid", fgColor="4472C4")
+            cell.border = border
 
-                        for idx, row in df_tasks.iterrows():
-                            t_start = get_next_business_day(cursor, holiday_dates)
-                            t_end = add_business_days(t_start, TASK_DURATION_WORKDAYS - 1, holiday_dates)
-                            cursor = t_end + datetime.timedelta(days=1)
-
-                            task_name = (f"{idx + 1}. {row['DESCRIPTION'][:60]}..."
-                                         if len(row['DESCRIPTION']) > 60
-                                         else f"{idx + 1}. {row['DESCRIPTION']}")
-
-                            schedule.append({
-                                '№': idx + 1,
-                                'Фаза проекта': row['Phase'],
-                                'DESCRIPTION': row['DESCRIPTION'],
-                                'Дата начала': t_start.strftime('%d.%m.%Y'),
-                                'Дата окончания': t_end.strftime('%d.%m.%Y')
-                            })
-
-                            # Plotly: x_end — эксклюзивная граница, поэтому +1 день
-                            gantt_data.append({
-                                'Task': task_name,
-                                'Start': pd.to_datetime(t_start),
-                                'Finish': pd.to_datetime(t_end) + pd.Timedelta(days=1),
-                                'Phase': row['Phase'],
-                                'Full_Description': row['DESCRIPTION']
-                            })
-
-                        res_df = pd.DataFrame(schedule)
-                        gantt_df = pd.DataFrame(gantt_data)
-
-                        # ------------------------------------------------
-                        # Вехи проекта
-                        # ------------------------------------------------
-                        milestones = []
-                        milestones += extract_milestones_from_start_sheet(xls)
-                        milestones += extract_phase3_milestones(xls)
-                        milestones = [m for m in milestones if m['Date'] is not None]
-
-                        # ------------------------------------------------
-                        # Диаграмма Ганта
-                        # ------------------------------------------------
-                        st.subheader("📊 Диаграмма Ганта проекта")
-
-                        fig = px.timeline(
-                            gantt_df,
-                            x_start="Start",
-                            x_end="Finish",
-                            y="Task",
-                            color="Phase",
-                            hover_data=["Full_Description"],
-                            title="Календарный SMS-график запуска в серийное производство"
-                        )
-                        fig.update_yaxes(autorange="reversed")
-
-                        # ---- Отрисовка вех (по образцу Phase 3) ----
-                        if milestones:
-                            # определяем вертикальные координаты для ромбов-маркеров
-                            first_task = gantt_df['Task'].iloc[0]
-                            last_task = gantt_df['Task'].iloc[-1]
-
-                            # разводим подписи, если даты совпадают
-                            used_dates = {}
-                            for m in milestones:
-                                m_date = pd.to_datetime(m['Date'])
-                                offset = used_dates.get(m_date, 0)
-                                used_dates[m_date] = offset + 1
-
-                                # вертикальная пунктирная линия на всю высоту
-                                fig.add_vline(
-                                    x=m_date,
-                                    line_width=2,
-                                    line_dash="dash",
-                                    line_color="crimson"
-                                )
-
-                                # подпись сверху
-                                fig.add_annotation(
-                                    x=m_date,
-                                    y=1.02 + offset * 0.06,
-                                    yref="paper",
-                                    text=f"🚩 {m['Name']}<br>{m_date.strftime('%d.%m.%Y')}",
-                                    showarrow=False,
-                                    font=dict(size=10, color="crimson"),
-                                    bgcolor="rgba(255,255,255,0.85)",
-                                    bordercolor="crimson",
-                                    borderwidth=1,
-                                    align="center"
-                                )
-
-                                # ромб-маркер прямо на линии вехи (как в Phase 3)
-                                fig.add_trace(go.Scatter(
-                                    x=[m_date],
-                                    y=[last_task],
-                                    mode="markers",
-                                    marker=dict(
-                                        symbol="diamond",
-                                        size=14,
-                                        color="crimson",
-                                        line=dict(color="white", width=1)
-                                    ),
-                                    name=f"🚩 {m['Name']}",
-                                    hovertemplate=(
-                                        f"<b>{m['Name']}</b><br>"
-                                        f"Дата: {m_date.strftime('%d.%m.%Y')}<br>"
-                                        f"Источник: {m['Source']}<extra></extra>"
-                                    ),
-                                    showlegend=True
-                                ))
-
-                        fig.update_layout(
-                            height=max(500, len(gantt_df) * 25),
-                            xaxis_title="Дата",
-                            yaxis_title="Задачи (DESCRIPTION)",
-                            legend_title="Фаза проекта / Вехи",
-                            margin=dict(t=140)
-                        )
-
-                        st.plotly_chart(fig, use_container_width=True)
-
-                        # ------------------------------------------------
-                        # Таблица вех (на экране)
-                        # ------------------------------------------------
-                        if milestones:
-                            st.subheader("🚩 Вехи проекта")
-                            ms_df = pd.DataFrame([{
-                                'Веха': m['Name'],
-                                'Дата': m['Date'].strftime('%d.%m.%Y'),
-                                'Источник': m['Source']
-                            } for m in milestones])
-                            st.dataframe(ms_df, use_container_width=True)
-
-                        # ------------------------------------------------
-                        # Таблица календарного плана
-                        # ------------------------------------------------
-                        st.subheader("📋 Таблица календарного плана")
-                        st.dataframe(res_df, use_container_width=True)
-
-                        # ------------------------------------------------
-                        # Excel: ОДИН лист, первая строка — жирным
-                        # ------------------------------------------------
-                        excel_out = "SMS_Schedule_Result.xlsx"
-
-                        combined_rows = []
-                        for _, r in res_df.iterrows():
-                            combined_rows.append({
-                                '№': r['№'],
-                                'Фаза проекта': r['Фаза проекта'],
-                                'DESCRIPTION / Веха': r['DESCRIPTION'],
-                                'Дата начала': r['Дата начала'],
-                                'Дата окончания': r['Дата окончания'],
-                                'Тип': 'Задача'
-                            })
-
-                        for m in milestones:
-                            combined_rows.append({
-                                '№': '',
-                                'Фаза проекта': 'Веха',
-                                'DESCRIPTION / Веха': f"🚩 {m['Name']}",
-                                'Дата начала': m['Date'].strftime('%d.%m.%Y'),
-                                'Дата окончания': m['Date'].strftime('%d.%m.%Y'),
-                                'Тип': 'Веха'
-                            })
-
-                        export_df = pd.DataFrame(combined_rows)
-
-                        with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
-                            export_df.to_excel(writer, index=False, sheet_name='SMS Schedule')
-                            ws = writer.sheets['SMS Schedule']
-
-                            # Первая строка — жирным + по центру
-                            for cell in ws[1]:
-                                cell.font = Font(bold=True)
-                                cell.alignment = Alignment(horizontal='center', vertical='center')
-
-                            # Автоширина колонок
-                            for col_idx, column in enumerate(export_df.columns, start=1):
-                                max_len = max(
-                                    [len(str(column))] +
-                                    [len(str(v)) for v in export_df[column].astype(str).tolist()]
-                                )
-                                ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 70)
-
-                            # Закрепить шапку
-                            ws.freeze_panes = "A2"
-
-                        with open(excel_out, "rb") as f:
-                            st.download_button(
-                                "📥 Скачать итоговый Excel",
-                                f,
-                                file_name="SMS_Schedule_Result.xlsx"
-                            )
-                    else:
-                        st.error("❌ Не удалось извлечь задачи из столбцов DESCRIPTION.")
+    # --- Вехи как вертикальные маркеры ---
+    milestone_font_small = Font(bold=True, color="C00000", size=10)
+    for m in milestones:
+        m_date = m["date"]
+        if isinstance(m_date, str):
+            try:
+                m_date = datetime.strptime(m_date, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+        elif isinstance(m_date, datetime):
+            m_date = m_date.date()
         else:
-            st.error("❌ Не удалось найти дату старта на вкладке 'START PROJECT TOGF-ENG-007-02'.")
+            continue
 
-    except Exception as e:
-        st.error(f"Ошибка при обработке файла: {e}")
-else:
-    st.info("ℹ️ Для запуска расчета загрузите Excel-файл.")
+        offset = (m_date - min_date).days // step
+        col = gantt_start_col + offset
+        if col < gantt_start_col:
+            continue
+
+        # Буквенное обозначение вехи над диаграммой
+        label_cell = ws.cell(row=gantt_start_row - 1, column=col, value=m["name"])
+        label_cell.font = milestone_font_small
+        label_cell.alignment = Alignment(horizontal="center", text_rotation=90)
+
+        # Вертикальная линия — заливаем столбец
+        for r in range(gantt_start_row, gantt_start_row + len(tasks) + 1):
+            cell = ws.cell(row=r, column=col)
+            if cell.fill is None or cell.fill.fill_type in (None, "none"):
+                cell.fill = PatternFill("solid", fgColor="FFC000")
+
+    # --- Легенда вех ---
+    legend_row = gantt_start_row + len(tasks) + 3
+    ws.cell(row=legend_row, column=gantt_start_col,
+            value="Вехи проекта:").font = Font(bold=True)
+    for i, m in enumerate(milestones, start=1):
+        r = legend_row + i
+        c1 = ws.cell(row=r, column=gantt_start_col, value=m["name"])
+        c1.font = milestone_font_small
+        c2 = ws.cell(row=r, column=gantt_start_col + 1,
+                     value=str(m["date"]) if m["date"] else "")
+        c2.alignment = left
+
+    wb.save(output_file)
+    print(f"✅ Файл сохранён: {output_file}")
+
+
+# ============================================================
+# ГЛАВНАЯ ФУНКЦИЯ
+# ============================================================
+def main():
+    print("📂 Чтение файла:", SOURCE_FILE)
+    wb = openpyxl.load_workbook(SOURCE_FILE, data_only=True)
+
+    # 1. Вехи
+    milestones = read_milestones(wb)
+    print(f"✅ Найдено вех: {len(milestones)}")
+    for m in milestones:
+        print(f"   - {m['name']}: {m['date']}")
+
+    # 2. Задачи по фазам
+    all_tasks = []
+    for sheet in SHEET_PHASES:
+        tasks = read_phase_tasks(wb, sheet)
+        print(f"✅ Вкладка '{sheet}': задач — {len(tasks)}")
+        all_tasks.extend(tasks)
+
+    if not all_tasks:
+        print("❌ Задачи не найдены. Проверь колонку DESCRIPTION и заливку.")
+        return
+
+    # 3. Старт проекта — первая дата вехи или сегодня
+    start_date = datetime.today().date()
+    for m in milestones:
+        if isinstance(m["date"], datetime):
+            start_date = m["date"].date()
+            break
+        if isinstance(m["date"], str):
+            try:
+                start_date = datetime.strptime(m["date"], "%Y-%m-%d").date()
+                break
+            except ValueError:
+                pass
+
+    # 4. Построение календарного плана
+    holidays = set()
+    tasks = build_schedule(all_tasks, milestones, holidays, start_date)
+
+    # 5. Экспорт
+    export_to_excel(tasks, milestones, OUTPUT_FILE)
+
+
+if __name__ == "__main__":
+    main()
