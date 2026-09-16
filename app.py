@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-# SMS график проекта P25077
+# SMS график проекта P25077 — версия для Streamlit
 
+import streamlit as st
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from datetime import datetime, timedelta
+import io
 
-
-SOURCE_FILE = "PLANT_MASTER_SCHEDULE P25077.xlsx"
-OUTPUT_FILE = "SMS_P25077_Result.xlsx"
 
 SHEET_MILESTONES = "START PROJECT TOGF-ENG-007-02"
 
@@ -18,7 +17,6 @@ SHEET_PHASES = [
 ]
 
 DURATION_COLUMNS = ["AM", "AN", "AQ", "AP"]
-
 MILESTONE_ROWS = range(30, 36)
 MILESTONE_NAME_COL = "B"
 MILESTONE_DATE_COL = "C"
@@ -70,10 +68,6 @@ def add_working_days(start_date, working_days, holidays):
     return current
 
 
-def weeks_to_working_days(weeks):
-    return weeks * 5
-
-
 def read_milestones(wb):
     ws = wb[SHEET_MILESTONES]
     milestones = []
@@ -113,7 +107,6 @@ def read_phase_tasks(wb, sheet_name):
     ws = wb[sheet_name]
     header_row, desc_col = find_description_column(ws)
     if header_row is None:
-        print("Колонка DESCRIPTION не найдена на вкладке " + sheet_name)
         return []
 
     tasks = []
@@ -151,7 +144,7 @@ def build_schedule(tasks, milestones, start_date):
 
     current = start_date
     for t in tasks:
-        wd = weeks_to_working_days(t["duration_weeks"])
+        wd = t["duration_weeks"] * 5
         t_start = current
         while not is_working_day(t_start, holidays):
             t_start += timedelta(days=1)
@@ -166,7 +159,7 @@ def build_schedule(tasks, milestones, start_date):
     return tasks
 
 
-def export_to_excel(tasks, milestones, output_file):
+def export_to_excel(tasks, milestones):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "SMS P25077"
@@ -281,44 +274,68 @@ def export_to_excel(tasks, milestones, output_file):
                      value=str(m["date"]) if m["date"] else "")
         c2.alignment = left
 
-    wb.save(output_file)
-    print("Файл сохранён: " + output_file)
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return stream
 
 
-def main():
-    print("Чтение файла: " + SOURCE_FILE)
-    wb = openpyxl.load_workbook(SOURCE_FILE, data_only=True)
+# ============================================================
+# STREAMLIT ИНТЕРФЕЙС
+# ============================================================
 
-    milestones = read_milestones(wb)
-    print("Найдено вех: " + str(len(milestones)))
-    for m in milestones:
-        print("  - " + m["name"] + ": " + str(m["date"]))
+st.set_page_config(page_title="SMS P25077", layout="wide")
+st.title("SMS график проекта P25077")
+st.write("Загрузите файл PLANT_MASTER_SCHEDULE P25077.xlsx для формирования графика.")
 
-    all_tasks = []
-    for sheet in SHEET_PHASES:
-        tasks = read_phase_tasks(wb, sheet)
-        print("Вкладка " + sheet + ": задач " + str(len(tasks)))
-        all_tasks.extend(tasks)
+uploaded_file = st.file_uploader(
+    "Выберите Excel-файл",
+    type=["xlsx", "xlsm"]
+)
 
-    if not all_tasks:
-        print("Задачи не найдены. Проверь колонку DESCRIPTION и заливку.")
-        return
-
-    start_date = datetime.today().date()
-    for m in milestones:
-        if isinstance(m["date"], datetime):
-            start_date = m["date"].date()
-            break
-        if isinstance(m["date"], str):
+if uploaded_file is not None:
+    if st.button("Сформировать график"):
+        with st.spinner("Обработка файла..."):
             try:
-                start_date = datetime.strptime(m["date"], "%Y-%m-%d").date()
-                break
-            except ValueError:
-                pass
+                wb = openpyxl.load_workbook(uploaded_file, data_only=True)
 
-    tasks = build_schedule(all_tasks, milestones, start_date)
-    export_to_excel(tasks, milestones, OUTPUT_FILE)
+                milestones = read_milestones(wb)
+                st.info("Найдено вех: " + str(len(milestones)))
 
+                all_tasks = []
+                for sheet in SHEET_PHASES:
+                    if sheet not in wb.sheetnames:
+                        st.warning("Вкладка не найдена: " + sheet)
+                        continue
+                    tasks = read_phase_tasks(wb, sheet)
+                    st.write("Вкладка " + sheet + ": задач " + str(len(tasks)))
+                    all_tasks.extend(tasks)
 
-if __name__ == "__main__":
-    main()
+                if not all_tasks:
+                    st.error("Задачи не найдены. Проверьте колонку DESCRIPTION и заливку.")
+                else:
+                    start_date = datetime.today().date()
+                    for m in milestones:
+                        if isinstance(m["date"], datetime):
+                            start_date = m["date"].date()
+                            break
+                        if isinstance(m["date"], str):
+                            try:
+                                start_date = datetime.strptime(m["date"], "%Y-%m-%d").date()
+                                break
+                            except ValueError:
+                                pass
+
+                    tasks = build_schedule(all_tasks, milestones, start_date)
+                    stream = export_to_excel(tasks, milestones)
+
+                    st.success("Готово. Скачайте файл ниже.")
+                    st.download_button(
+                        label="Скачать SMS_P25077_Result.xlsx",
+                        data=stream,
+                        file_name="SMS_P25077_Result.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            except Exception as e:
+                st.error("Ошибка обработки: " + str(e))
+
