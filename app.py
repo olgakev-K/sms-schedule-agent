@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import io
 
 # ============================================================
-# 1. КОНСТАНТЫ И НАСТРОЙКИ (Логика из Код 2)
+# 1. КОНСТАНТЫ И НАСТРОЙКИ
 # ============================================================
 SHEET_MILESTONES = "START PROJECT TOGF-ENG-007-02"
 SHEET_PHASES = [
@@ -29,7 +29,7 @@ RU_HOLIDAYS = {
 }
 
 # ============================================================
-# 2. ФУНКЦИИ ОБРАБОТКИ ДАННЫХ (Логика из Код 2)
+# 2. ФУНКЦИИ ОБРАБОТКИ ДАННЫХ
 # ============================================================
 def build_holiday_set(years):
     holidays = set()
@@ -59,7 +59,20 @@ def read_milestones(wb):
         name = ws[f"{MILESTONE_NAME_COL}{row}"].value
         date_val = ws[f"{MILESTONE_DATE_COL}{row}"].value
         if name and pd.notna(date_val):
-            milestones.append({"name": str(name).strip(), "date": pd.to_datetime(date_val)})
+            # Преобразуем дату к datetime
+            if isinstance(date_val, datetime):
+                m_date = date_val
+            elif isinstance(date_val, str):
+                try:
+                    m_date = datetime.strptime(date_val, "%Y-%m-%d")
+                except:
+                    continue
+            else:
+                try:
+                    m_date = pd.to_datetime(date_val)
+                except:
+                    continue
+            milestones.append({"name": str(name).strip(), "date": m_date})
     return milestones
 
 def count_filled_cells(ws, row, columns):
@@ -203,7 +216,7 @@ def export_to_excel(tasks, milestones):
     return stream
 
 # ============================================================
-# 3. ИНТЕРФЕЙС STREAMLIT (Красота из Код 1)
+# 3. ИНТЕРФЕЙС STREAMLIT
 # ============================================================
 st.set_page_config(page_title="Генератор SMS Графика P25077", layout="wide")
 st.title("🏭 Генератор SMS Графика Запуска P25077")
@@ -235,6 +248,12 @@ if uploaded_file is not None:
                     
                     tasks = build_schedule(all_tasks, milestones, start_date)
                     df_tasks = pd.DataFrame(tasks)
+                    
+                    # ИСПРАВЛЕНИЕ: Явно преобразуем к datetime перед использованием .dt
+                    df_tasks["start"] = pd.to_datetime(df_tasks["start"], errors='coerce')
+                    df_tasks["end"] = pd.to_datetime(df_tasks["end"], errors='coerce')
+                    
+                    # Теперь безопасно используем .dt.strftime
                     df_tasks["start_fmt"] = df_tasks["start"].dt.strftime("%d.%m.%Y")
                     df_tasks["end_fmt"] = df_tasks["end"].dt.strftime("%d.%m.%Y")
                     
@@ -249,9 +268,9 @@ if uploaded_file is not None:
                         st.dataframe(display_df, use_container_width=True, hide_index=True)
                         
                         if milestones:
-                            st.subheader("🚩 Вехи проекта")
+                            st.subheader(" Вехи проекта")
                             df_m = pd.DataFrame(milestones)
-                            df_m["date_fmt"] = df_m["date"].dt.strftime("%d.%m.%Y")
+                            df_m["date_fmt"] = pd.to_datetime(df_m["date"]).dt.strftime("%d.%m.%Y")
                             st.dataframe(df_m[["name", "date_fmt"]].rename(columns={"name": "Веха", "date_fmt": "Дата"}), use_container_width=True, hide_index=True)
 
                         # Кнопки скачивания
@@ -266,7 +285,7 @@ if uploaded_file is not None:
                         
                         csv = display_df.to_csv(index=False, sep=";").encode('utf-8-sig')
                         st.download_button(
-                            label="📥 Скачать таблицу CSV",
+                            label=" Скачать таблицу CSV",
                             data=csv,
                             file_name="SMS_Schedule.csv",
                             mime="text/csv",
@@ -286,7 +305,7 @@ if uploaded_file is not None:
                         )
                         fig.update_yaxes(autorange="reversed", title="Задачи")
                         
-                        # Добавляем вехи на график (как в колонке BK шаблона)
+                        # Добавляем вехи на график
                         for m in milestones:
                             fig.add_vline(
                                 x=m["date"],
@@ -304,6 +323,10 @@ if uploaded_file is not None:
                             legend_title="Фаза"
                         )
                         st.plotly_chart(fig, use_container_width=True)
+                        
+            except Exception as e:
+                st.error(f"❌ Ошибка обработки файла: {str(e)}")
+                st.exception(e)
                         
             except Exception as e:
                 st.error(f"❌ Ошибка обработки файла: {str(e)}")
